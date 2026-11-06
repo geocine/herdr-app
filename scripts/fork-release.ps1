@@ -8,12 +8,16 @@
 #   scripts/fork-release.ps1                 build and pack
 #   scripts/fork-release.ps1 -Publish        then a GitHub release on geocine/herdr-app (needs gh)
 #   scripts/fork-release.ps1 -Core <dir>     the herdr-core checkout (default: ..\herdr-core)
+#   scripts/fork-release.ps1 -CoreExe <exe>  pack this herdr-core.exe instead of building one
+#                                            (one antivirus already lets run: a fresh unsigned
+#                                            build can be blocked until it has been scanned)
 #
 # The app is built without HERDR_APP_RELEASE, so it never updates itself or
 # the core from upstream (src/update.rs). Building needs what the two repos
 # need anyway: ZIG and LIBCLANG_PATH set, cargo, Git Bash (for the notices).
 param(
     [string]$Core = (Join-Path $PSScriptRoot "..\..\herdr-core"),
+    [string]$CoreExe,
     [switch]$Publish,
     [string]$Repo = "geocine/herdr-app"
 )
@@ -36,10 +40,14 @@ try {
     Remove-Item -Recurse -Force $out, $stage -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $out, "$stage\core\THIRD-PARTY-NOTICES", "$stage\app\herdr-app" | Out-Null
 
-    Write-Host "Building herdr-core ($Core)..."
-    Push-Location $Core
-    try { Run @("cargo", "build", "--release", "--locked", "-p", "herdr-core") } finally { Pop-Location }
-    $coreExe = Join-Path $Core "target\release\herdr-core.exe"
+    if ($CoreExe) {
+        $coreExe = Resolve-Path $CoreExe
+    } else {
+        Write-Host "Building herdr-core ($Core)..."
+        Push-Location $Core
+        try { Run @("cargo", "build", "--release", "--locked", "-p", "herdr-core") } finally { Pop-Location }
+        $coreExe = Join-Path $Core "target\release\herdr-core.exe"
+    }
     Copy-Item $coreExe "$stage\core\"
     Copy-Item (Join-Path $Core "LICENSE") "$stage\core\"
     Copy-Item (Join-Path $Core "crates\herdr-core\THIRD-PARTY-NOTICES") "$stage\core\THIRD-PARTY-NOTICES\herdr-core.txt"
