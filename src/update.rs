@@ -576,7 +576,8 @@ fn marker() -> PathBuf {
 /// Cores before 0.1.5 lack `--version`: they keep their same-generation update
 /// path. A core a package manager owns is left alone (hc says so).
 pub fn after_update() {
-    if std::fs::remove_file(marker()).is_err() {
+    // A build from source updates nothing, the core included: it may run a core built with it.
+    if std::fs::remove_file(marker()).is_err() || !checks_core() {
         return;
     }
     std::thread::spawn(|| {
