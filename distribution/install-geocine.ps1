@@ -26,7 +26,15 @@ $ProgressPreference = "SilentlyContinue"
 # throw, not exit: under `irm | iex`, exit would close the person's window.
 function Fail($why) { throw "herdr: $why" }
 
-$from = if ($env:HERDR_FORK_URL) { $env:HERDR_FORK_URL.TrimEnd("/") } else { "https://github.com/geocine/herdr-app/releases/latest/download" }
+$repo = "geocine/herdr-app"
+$from = if ($env:HERDR_FORK_URL) { $env:HERDR_FORK_URL.TrimEnd("/") } else {
+    # One release for all files: GitHub caches each file's `latest` redirect
+    # on its own, so right after a release they can point at different ones.
+    $tag = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers @{ "User-Agent" = "herdr-fork-installer" }).tag_name
+    if (-not $tag) { Fail "no release of $repo found" }
+    Write-Host "Release $tag"
+    "https://github.com/$repo/releases/download/$tag"
+}
 $test = [bool]$env:HERDR_INSTALL_ROOT
 $root = if ($test) { $env:HERDR_INSTALL_ROOT } else { Join-Path $env:LOCALAPPDATA "Programs" }
 $appDir = Join-Path $root "herdr-app"
