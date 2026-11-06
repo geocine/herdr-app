@@ -34,6 +34,24 @@ pub fn home() -> PathBuf {
     std::env::home_dir().unwrap_or_else(|| "/".into())
 }
 
+/// The folders directly inside `dir` on this machine (`~` is the home folder),
+/// hidden ones left out, by name: what `project_roots` offers as spaces.
+pub fn subfolders(dir: &str) -> Vec<String> {
+    let dir = match dir.strip_prefix('~') {
+        Some(rest) => home().join(rest.trim_start_matches(['/', '\\'])),
+        None => PathBuf::from(dir),
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let mut out: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()) && !e.file_name().to_string_lossy().starts_with('.'))
+        .map(|e| e.path().to_string_lossy().into_owned())
+        .collect();
+    out.sort_by_key(|p| p.to_lowercase());
+    out.truncate(500);
+    out
+}
+
 /// The fonts on this machine (`fonts()`): read when the window opens and
 /// again when the home brings new ones.
 static FONTS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -981,6 +999,10 @@ fn module(inst: Instance, copy: u64) -> HostModule {
                 let _ = tx.send_blocking(known_agents(on, list));
             });
             Ok(async move { Ok(to_host(&rx.recv().await.unwrap_or(Value::Array(Vec::new())))) })
+        })
+        .function("subfolders", |a| {
+            let dir = a.get(0).map(from_host).and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default();
+            Ok(to_host(&json!(subfolders(&dir))))
         })
         .async_function("pickFolder", |a| {
             let prompt = a.get(0).map(from_host).and_then(|v| v.get("prompt").and_then(Value::as_str).map(str::to_owned)).unwrap_or_else(|| "Open".into());
