@@ -13,6 +13,7 @@ mod keys;
 mod layout;
 mod layout_sync;
 mod links;
+mod login;
 mod model;
 mod mirror;
 mod mirror_sync;
@@ -56,6 +57,7 @@ Usage:
   herdr-app status                 what the window shows, and any errors
   herdr-app shot [file.png]        save the current window frame (default: herdr-shot.png)
   herdr-app check <mod folder>     load a mod once and report what's wrong
+  herdr-app start-core             start herdr-core without a window (settings start_core_at_login)
   herdr-app --skill                Agent Skill: driving the window, and where hc fits
   herdr-app --version
 
@@ -110,6 +112,7 @@ fn main() {
         Some("-h" | "--help" | "help") => return print!("{HELP}"),
         Some("--skill") => return print!("{}", include_str!("SKILL.md")),
         Some("-V" | "--version" | "version") => return println!("herdr-app {}", env!("CARGO_PKG_VERSION")),
+        Some("start-core") => std::process::exit(login::start_core()),
         Some(other) => {
             eprint!("herdr-app: unknown argument {other:?}\n\n{HELP}");
             std::process::exit(2);
