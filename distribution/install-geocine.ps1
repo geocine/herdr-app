@@ -102,7 +102,8 @@ try {
     if (Test-Path $core) {
         # Swapped the planned way, so its terminals keep running.
         # Refused when the core there is newer than the fork's: the fork needs rebuilding on it.
-        $said = & $core update --from $new 2>&1 | Out-String
+        # Continue: Windows PowerShell turns a program's stderr into errors.
+        $said = & { $ErrorActionPreference = "Continue"; & $core update --from $new 2>&1 | Out-String }
         if ($LASTEXITCODE) { Fail "replacing $core with the fork's $version failed: $($said.Trim())" }
         Write-Host "herdr-core updated to $version (fork)."
     } else {
