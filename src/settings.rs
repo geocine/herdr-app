@@ -404,6 +404,29 @@ pub struct Person {
     pub theme: Option<crate::layout::ThemeChoice>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub colors: BTreeMap<String, String>,
+    /// Where new tabs and splits start: the space's folder, or the focused terminal's.
+    #[serde(skip_serializing_if = "NewTerminalFolder::is_space")]
+    pub new_terminal_folder: NewTerminalFolder,
+    /// Folders whose subfolders the picker offers to open as spaces.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub project_roots: Vec<String>,
+}
+
+/// Where a new tab or split starts when no folder is given.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NewTerminalFolder {
+    /// The space's folder (set with space.set-folder), so a space stays in its project.
+    #[default]
+    Space,
+    /// The focused terminal's current folder (upstream Herdr's behavior).
+    Focused,
+}
+
+impl NewTerminalFolder {
+    fn is_space(&self) -> bool {
+        *self == NewTerminalFolder::Space
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -460,6 +483,8 @@ impl Default for Person {
             appearance: Appearance::System,
             theme: None,
             colors: BTreeMap::new(),
+            new_terminal_folder: NewTerminalFolder::Space,
+            project_roots: Vec::new(),
         }
     }
 }
@@ -495,6 +520,8 @@ pub struct Settings {
     pub minimum_contrast: f32,
     pub option_as_alt: OptionAsAlt,
     pub sounds: Sounds,
+    pub new_terminal_folder: NewTerminalFolder,
+    pub project_roots: Vec<String>,
 }
 
 /// Attention sounds: when an agent needs you, and when one finished while you
@@ -537,6 +564,8 @@ impl Default for Settings {
             minimum_contrast: 1.0,
             option_as_alt: OptionAsAlt::Auto,
             sounds: Sounds::default(),
+            new_terminal_folder: NewTerminalFolder::Space,
+            project_roots: Vec::new(),
         }
     }
 }
@@ -575,6 +604,8 @@ impl Settings {
             clipboard_write: person.clipboard_write,
             minimum_contrast: person.minimum_contrast,
             option_as_alt: person.option_as_alt,
+            new_terminal_folder: person.new_terminal_folder,
+            project_roots: person.project_roots.clone(),
         }
     }
 }

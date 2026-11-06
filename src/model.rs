@@ -244,6 +244,10 @@ impl Model {
         if !p.name.is_empty() {
             return p.name.clone();
         }
+        // A space kept in its folder is called after that folder, so cd elsewhere doesn't rename it.
+        if fixed_folders() && !p.folder.is_empty() {
+            return folder_name(&p.folder, home);
+        }
         let first = p.tabs.iter().flat_map(|c| c.root.terminals()).next();
         let folder = first
             .and_then(|n| n.terminal().and_then(|a| self.folder_info.get(a)).map(|f| f.top.clone()).or_else(|| self.pane_folders.get(&n.id).cloned()))
@@ -544,6 +548,27 @@ pub fn pane(id: &str, address: &str) -> Node {
 }
 
 /// A folder as a name: its last part, `~` for the home folder (`/` and `\` both).
+/// Whether spaces keep their own folder (settings `new_terminal_folder: "space"`).
+pub fn fixed_folders() -> bool {
+    crate::settings::get().new_terminal_folder == crate::settings::NewTerminalFolder::Space
+}
+
+/// The space's own folder when new terminals should start there: set, and
+/// (on this machine) still a folder.
+pub fn space_root(p: &Space) -> Option<String> {
+    (fixed_folders() && !p.folder.is_empty() && (p.machine.is_some() || std::path::Path::new(&p.folder).is_dir()))
+        .then(|| p.folder.clone())
+}
+
+/// Whether two folders are the same place (case-insensitive on Windows, ignoring a trailing separator).
+pub fn same_folder(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        let s = s.trim_end_matches(['/', '\\']);
+        if cfg!(windows) { s.replace('/', "\\").to_lowercase() } else { s.to_owned() }
+    };
+    !a.is_empty() && norm(a) == norm(b)
+}
+
 pub fn folder_name(path: &str, home: &str) -> String {
     let full = path;
     let path = path.trim_end_matches(['/', '\\']);
@@ -632,6 +657,7 @@ mod tests {
 
     #[test]
     fn unnamed_spaces_follow_their_first_terminal_and_tabs_count() {
+        crate::settings::set(crate::settings::Settings { new_terminal_folder: crate::settings::NewTerminalFolder::Focused, ..Default::default() });
         let mut m = Model::default();
         m.add_space("p1", "", "/home/me", Tab::new("c1", "", "x1", "t1"));
         m.add_tab("p1", Tab::new("c2", "review", "x2", "t2"));
@@ -646,6 +672,19 @@ mod tests {
         assert_eq!(names.iter().map(String::as_str).collect::<Vec<_>>(), ["1", "review", "3"]);
         m.space_mut("p1").unwrap().name = "api".into();
         assert_eq!(m.space_name(m.space("p1").unwrap(), "/home/me"), "api");
+    }
+
+    #[test]
+    fn spaces_kept_in_their_folder_are_named_after_it() {
+        crate::settings::set(crate::settings::Settings::default());
+        let mut m = Model::default();
+        m.add_space("p1", "", "/src/api", Tab::new("c1", "", "x1", "t1"));
+        m.pane_folders.insert("x1".into(), "/src/notes".into());
+        let p = m.space("p1").unwrap().clone();
+        assert_eq!(m.space_name(&p, "/home/me"), "api");
+        assert!(same_folder("/src/api/", "/src/api"));
+        assert_eq!(same_folder("C:/src/api/", "c:/SRC/api"), cfg!(windows));
+        assert!(!same_folder("", ""));
     }
 
     #[test]

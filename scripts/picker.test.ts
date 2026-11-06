@@ -22,12 +22,14 @@ class Element {
 const source = await readFile(new URL("../defaults/mods/picker/main.js", import.meta.url), "utf8");
 const element = () => new Element();
 const commands: unknown[][] = [];
+const folders: Record<string, string[]> = {};
 const values: Record<string, any> = {
   View: class {}, div: element, svg: element, v_flex: element, h_flex: element,
   Input: { new: element }, InputState: { new: () => ({ on() {}, focus() {} }) },
   agents: () => [], spaces: () => [], terminals: () => [], theme: () => ({}),
   settings: () => ({ zoom: 1.2 }), props: () => ({}), shared: () => ({}),
   setShared() {}, closeOverlay() {}, openOverlay() {}, run(...args: unknown[]) { commands.push(args); }, hc() {},
+  subfolders: (root: string) => folders[root] ?? [],
 };
 const Picker = new Function(...Object.keys(values), source.replace(/^import .*;\n/gm, "").replace("export default class Picker", "return class Picker"))(...Object.values(values));
 const cx = { notify() {}, stop_propagation() {}, timer: { after() {} }, focus_handle() {}, spawn() {} };
@@ -58,7 +60,7 @@ test("picker reveals keyboard selection in its measured, constrained list", () =
     let tree = view.render();
     tree.calls.on_key_down[0]({ key: "up" }, cx);
     tree = view.render();
-    const selected = find(tree, machines ? `pk-space-machine-${machines - 1}` : "pk-space-here");
+    const selected = find(tree, "pk-open");
     expect(selected.calls.top[0]).toBe(height - 32);
     expect(selected.calls.bottom[0]).toBe(0);
     const list = find(tree, "pk-list");
@@ -91,4 +93,19 @@ test("picker preserves small pixel touchpad deltas", () => {
     list.calls.on_scroll_wheel[0]({ delta: { y: delta } }, cx);
     expect(view.scroll).toBe(-delta);
   }
+});
+
+test("picker offers project folders without a space and opens them as spaces", () => {
+  folders["/src"] = ["/src/api", "/src/web"];
+  values.settings = () => ({ zoom: 1, project_roots: ["/src"] });
+  values.spaces = () => [{ id: "s1", name: "api", folder: "/src/api/", machine: null, tabs: [] }];
+  const Fresh = new Function(...Object.keys(values), source.replace(/^import .*;\n/gm, "").replace("export default class Picker", "return class Picker"))(...Object.values(values));
+  const view = new Fresh();
+  view.init({}, cx);
+  const projects = view.rows().filter((r: any) => r.kind === "project");
+  expect(projects.map((r: any) => r.name)).toEqual(["web"]);
+  commands.length = 0;
+  view.go(projects[0]);
+  view.go({ kind: "open" });
+  expect(commands).toEqual([["space.open", { folder: "/src/web" }], ["space.open"]]);
 });

@@ -38,6 +38,10 @@ export function knownAgents(options?: { on?: string | null }): Promise<(Program 
  *  when the person cancels. `prompt`: the confirm button's text (default "Open"). */
 export function pickFolder(options?: { prompt?: string }): Promise<string | null>;
 
+/** The folders directly inside a folder on this machine (`~` is the home folder), hidden ones
+ *  left out, sorted by name. For `project_roots` in settings.json. */
+export function subfolders(path: string): string[];
+
 /** Plays "done" or "blocked" (the attention sounds, or the files settings.json names), or an MP3
  *  file (absolute, or relative to ~/.config/herdr-app). */
 export function playSound(sound: string): null;

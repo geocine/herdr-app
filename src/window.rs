@@ -2338,10 +2338,14 @@ impl AppWindow {
 
     // ---- creating terminals ------------------------------------------------
 
-    /// The folder new terminals in `space` start in: where its shown tab's focused
-    /// pane is now (Herdr's "follow"), else the folder the space was made in.
+    /// The folder new terminals in `space` start in: the space's own folder
+    /// (settings `new_terminal_folder: "space"`, the default), else where its shown
+    /// tab's focused pane is now (Herdr's "follow"), else the folder the space was made in.
     fn folder_for(&self, space: &str) -> String {
         let p = self.model.space(space);
+        if let Some(root) = p.and_then(model::space_root) {
+            return root;
+        }
         let here = p.and_then(|p| p.active_tab()).and_then(|c| c.focused_pane()).and_then(|f| self.model.address_of(&f)).and_then(|a| self.cwds.get(&a).cloned());
         here.or_else(|| p.map(|p| p.folder.clone())).unwrap_or_else(home)
     }
@@ -2400,6 +2404,13 @@ impl AppWindow {
             cmd.extend(task.map(str::to_owned));
             if on.is_some() {
                 return crate::remote_shell::launch(cmd);
+            }
+            if cfg!(windows)
+                && let Some(sh) = crate::core_shell::posix_shell()
+            {
+                // Core's shell is Git Bash (or another POSIX one): agents start in it too,
+                // as a login shell so its PATH is set up, and it stays when the agent exits.
+                return unix_agent_argv(sh, cmd, true);
             }
             let sh = shell();
             if cfg!(windows) {
@@ -2471,8 +2482,11 @@ impl AppWindow {
         let (Some(p), Some(c)) = (self.model.space_of(&target), self.model.tab_of(&target)) else { return Err(format!("no pane {target:?}")) };
         let (space, ctx, fallback) = (p.id.clone(), c.id.clone(), p.folder.clone());
         let target_addr = self.model.address_of(&target);
+        // The space's own folder, unless the split runs on another machine than the space.
+        let same_machine = target_addr.as_deref().map(|a| a.split_once('/').map(|(m, _)| m)) == Some(p.machine.as_deref());
+        let root = model::space_root(p).filter(|_| same_machine);
         let follow = folder.is_none();
-        let cwd = folder.unwrap_or_else(|| target_addr.as_ref().and_then(|a| self.cwds.get(a).cloned()).unwrap_or(fallback));
+        let cwd = folder.or(root).unwrap_or_else(|| target_addr.as_ref().and_then(|a| self.cwds.get(a).cloned()).unwrap_or(fallback));
         // A split stays on the machine of the pane it splits (else its space's).
         let on = target_addr.and_then(|a| a.split_once('/').map(|(m, _)| m.to_owned())).or_else(|| self.machine_of(&space));
         let new = self.model.fresh_id_on("p", on.as_deref());
@@ -2777,6 +2791,10 @@ impl AppWindow {
             self.ask_name(name, args, window, cx);
             return json!({ "asked": "name" });
         }
+        if person && matches!(name, "space.set-folder" | "space.open") && args.get("folder").is_none_or(Value::is_null) {
+            self.ask_folder(name, args, window, cx);
+            return json!({ "asked": "folder" });
+        }
         if let Some(arg) = crate::commands::missing(command, &args) {
             return json!({ "error": format!("{name} needs {arg}") });
         }
@@ -2788,7 +2806,7 @@ impl AppWindow {
             if !args.is_object() { args = json!({}); }
             args["machine"] = json!(machine);
         }
-        if matches!(name, "space.new" | "space.close" | "space.rename" | "space.move" | "tab.new" | "tab.close" | "tab.rename" | "tab.move" | "pane.split" | "pane.close" | "pane.swap" | "terminal.keep" | "terminal.park") {
+        if matches!(name, "space.new" | "space.open" | "space.set-folder" | "space.close" | "space.rename" | "space.move" |"tab.new" | "tab.close" | "tab.rename" | "tab.move" | "pane.split" | "pane.close" | "pane.swap" | "terminal.keep" | "terminal.park") {
             let node = ["id", "space", "pane"].into_iter().find_map(|k| Self::arg(&args, k));
             let target = node.and_then(|id| self.model.space(id).or_else(|| self.model.space_of(id))).or_else(|| self.model.active_space());
             let machine = if name == "space.new" { Self::arg(&args, "machine") }
@@ -2804,6 +2822,24 @@ impl AppWindow {
         self.dispatch(name, &args, person, window, cx);
         self.flush_documents(false, window, cx);
         self.reply.take().unwrap_or_else(|| json!({ "ok": true }))
+    }
+
+    /// Asks the person to pick a folder (space.set-folder, space.open), then runs it with it.
+    fn ask_folder(&mut self, name: &str, mut args: Value, window: &mut Window, cx: &mut Context<Self>) {
+        if !args.is_object() {
+            args = json!({});
+        }
+        let prompt = if name == "space.open" { "Open as space" } else { "Use for this space" };
+        let picked = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some(prompt.into()) });
+        let name = name.to_owned();
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(folder) = picked.await.ok().and_then(Result::ok).flatten().and_then(|p| p.into_iter().next()) else { return };
+            args["folder"] = json!(folder.to_string_lossy());
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.run(&name, args, window, cx);
+                cx.notify();
+            });
+        }).detach();
     }
 
     /// Asks the person for a new name (space.rename, tab.rename), then runs it with it.
@@ -2865,6 +2901,32 @@ impl AppWindow {
                 let Some(name) = Self::arg(a, "name") else { return self.fail("space.rename needs name (empty: automatic)") };
                 let Some(p) = self.model.space_mut(&id) else { return self.fail(format!("no space {id:?}")) };
                 p.name = name.trim().to_owned();
+            }
+            "space.set-folder" => {
+                let Some(id) = Self::owned(a, "id").or_else(|| self.model.active.clone()) else { return self.fail("no space to set a folder for") };
+                let Some(folder) = Self::arg(a, "folder").map(str::trim).filter(|f| !f.is_empty()) else { return self.fail("space.set-folder needs folder") };
+                let Some(p) = self.model.space_mut(&id) else { return self.fail(format!("no space {id:?}")) };
+                // Another machine's folders can't be checked from here; its core reports a bad one at the next start.
+                if p.machine.is_none() && !std::path::Path::new(folder).is_dir() {
+                    return self.fail(format!("{folder} is not a folder"));
+                }
+                p.folder = folder.to_owned();
+                self.answer(Ok(json!({ "space": id, "folder": folder })));
+            }
+            "space.open" => {
+                let Some(folder) = Self::arg(a, "folder").map(str::trim).filter(|f| !f.is_empty()) else { return self.fail("space.open needs folder") };
+                if !std::path::Path::new(folder).is_dir() {
+                    return self.fail(format!("{folder} is not a folder"));
+                }
+                let existing = self.model.spaces.iter().find(|p| p.machine.is_none() && model::same_folder(&p.folder, folder)).map(|p| p.id.clone());
+                let r = match existing {
+                    Some(id) => {
+                        self.model.active = Some(id.clone());
+                        Ok(json!({ "space": id, "existing": true }))
+                    }
+                    None => self.new_space("", Some(folder.to_owned()), None, None, None, None, window),
+                };
+                self.answer(r);
             }
             "space.move" => {
                 let (Some(id), Some(i)) = (Self::arg(a, "id"), a.get("index").and_then(Value::as_u64)) else { return self.fail("space.move needs id and index") };
