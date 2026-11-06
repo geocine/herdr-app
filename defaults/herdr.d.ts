@@ -47,6 +47,9 @@ export function pickFolder(options?: { prompt?: string }): Promise<string | null
  *  `prompt`: the confirm button's text (default "Open"). `multiple`: allow several files
  *  (default false). */
 export function pickFiles(options?: { prompt?: string; multiple?: boolean }): Promise<string[] | null>;
+/** The folders directly inside a folder on this machine (`~` is the home folder), hidden ones
+ *  left out, sorted by name. For `project_roots` in settings.json. */
+export function subfolders(path: string): string[];
 
 /** Plays "done" or "blocked" (the attention sounds, or the files settings.json names), or an MP3
  *  file (absolute, or relative to ~/.config/herdr-app). */
