@@ -2,11 +2,12 @@
 // something that needs you come first, quiet spaces (no agent running)
 // fold into "earlier". Type to filter, ↑/↓ and Enter to go, ctrl+d to close
 // a tab, Esc to leave. Last rows: new work (a tab here, a space on this
-// computer or on each connected machine).
+// computer or on each connected machine), then "open folder…" and the
+// folders under settings.json's project_roots that have no space yet.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { agents, spaces, terminals, run, hc, theme, settings, props, closeOverlay, openOverlay, shared, setShared } from "herdr";
+import { agents, spaces, terminals, run, hc, theme, settings, props, closeOverlay, openOverlay, shared, setShared, subfolders } from "herdr";
 
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
 
@@ -34,18 +35,41 @@ function spaceColor(t, p) {
   return c.startsWith("#") ? c : (MARK[c] ?? t[c]);
 }
 
+const isPickable = (r) => ["ctx", "new", "space", "open", "project"].includes(r.kind);
+
+// Folders under settings.json's project_roots, as { folder, name }.
+function projectFolders() {
+  const roots = settings().project_roots ?? [];
+  const seen = new Set();
+  const out = [];
+  for (const root of roots) {
+    for (const folder of subfolders(root) ?? []) {
+      const k = sameKey(folder);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push({ folder, name: folder.split(/[\\/]/).filter(Boolean).pop() ?? folder });
+    }
+  }
+  return out;
+}
+// Folder paths compare without a trailing separator, any slash, any case (Windows' way).
+function sameKey(folder) {
+  return folder.replace(/[\\/]+$/, "").replace(/\//g, "\\").toLowerCase();
+}
+
 export default class Picker extends View {
   init(_props, cx) {
     this.filter = "";
     this.input = InputState.new({ placeholder: "Go to a tab, space or agent…" });
     this.input.on("change", (_e, cx) => { this.filter = this.input.value(); this.at = 0; cx.notify(); });
-    this.input.on("submit", () => this.go(this.rows().filter(r => r.kind === "ctx" || r.kind === "new" || r.kind === "space")[this.at]));
+    this.input.on("submit", () => this.go(this.rows().filter(isPickable)[this.at]));
     this.input.focus();
     cx.timer.after(600, () => this.input.focus());
     this.at = null;
     this.scroll = 0;
     this.showEarlier = false;
     this.machines = [];
+    this.projects = projectFolders();
     this.handle = cx.focus_handle();
     cx.spawn(async (cx) => {
       try {
@@ -95,6 +119,13 @@ export default class Picker extends View {
     out.push({ kind: "new" });
     out.push({ kind: "space", machine: null });
     for (const m of this.machines) out.push({ kind: "space", machine: m });
+    out.push({ kind: "open" });
+    const open = new Set(spaces().filter((w) => !w.machine).map((w) => sameKey(w.folder ?? "")));
+    for (const p of this.projects) {
+      if (open.has(sameKey(p.folder))) continue;
+      if (f && !p.name.toLowerCase().includes(f) && !p.folder.toLowerCase().includes(f)) continue;
+      out.push({ kind: "project", ...p });
+    }
     return out;
   }
 
@@ -104,6 +135,8 @@ export default class Picker extends View {
     if (r.kind === "ctx") run("tab.select", { id: r.ctx.id });
     else if (r.kind === "new") run("tab.new");
     else if (r.kind === "space") run("space.new", { machine: r.machine ?? "" });
+    else if (r.kind === "open") run("space.open");
+    else if (r.kind === "project") run("space.open", { folder: r.folder });
   }
 
   glyph(t, st) {
@@ -114,7 +147,7 @@ export default class Picker extends View {
   render() {
     const t = theme();
     const rows = this.rows();
-    const pickable = rows.filter((r) => r.kind === "ctx" || r.kind === "new" || r.kind === "space");
+    const pickable = rows.filter(isPickable);
     // Opens on where you are.
     if (this.at === null) this.at = Math.max(0, pickable.findIndex((r) => r.kind === "ctx" && r.w.active && r.ctx.active));
     this.at = Math.min(this.at, pickable.length - 1);
@@ -122,7 +155,7 @@ export default class Picker extends View {
     // One continuous strip: each row (and the group title before it) at a fixed
     // y. Scrolling moves the strip only as far as it takes to keep the selected
     // row in view, so the arrows can't run the selection off the list.
-    const H = { head: 29, earlier: 35, new: 36, ctx: 32, space: 32 };
+    const H = { head: 29, earlier: 35, new: 36, ctx: 32, space: 32, open: 32, project: 32 };
     const tops = [];
     let y = 0;
     rows.forEach((r) => { tops.push(y); y += H[r.kind] ?? 32; });
@@ -175,10 +208,28 @@ export default class Picker extends View {
           .child(`earlier: ${r.count} quiet space${r.count > 1 ? "s" : ""} ${this.showEarlier ? "▴" : "▾"}`);
       }
       const on = r === sel;
-      if (r.kind === "new" || r.kind === "space") {
-        const label = r.kind === "new" ? "new tab" : r.machine ? `new space on ${r.machine}` : "new space";
+      if (r.kind === "project") {
         return h_flex()
-          .id(r.kind === "new" ? "pk-new" : `pk-space-${r.machine ?? "here"}`)
+          .id(`pk-project-${r.folder}`)
+          .mx(4)
+          .px(10)
+          .h(32)
+          .items_center()
+          .rounded(7)
+          .gap(8)
+          .text_color(t.muted)
+          .cursor_pointer()
+          .when(on, (el) => el.bg(t.hover))
+          .hover((s) => s.bg(t.hover))
+          .on_click(() => this.go(r))
+          .child(div().w(12).child("▸"))
+          .child(div().text_color(t.foreground).child(r.name))
+          .child(div().flex_1().truncate().text_size(11).text_color(t.dim).child(r.folder));
+      }
+      if (r.kind === "new" || r.kind === "space" || r.kind === "open") {
+        const label = r.kind === "new" ? "new tab" : r.kind === "open" ? "open folder as space…" : r.machine ? `new space on ${r.machine}` : "new space";
+        return h_flex()
+          .id(r.kind === "new" ? "pk-new" : r.kind === "open" ? "pk-open" : `pk-space-${r.machine ?? "here"}`)
           .mx(4)
           .when(r.kind === "new", (el) => el.mt(4))
           .px(10)
