@@ -3726,6 +3726,7 @@ dependencies = [
  "smallvec",
  "swash",
  "tiny-skia",
+ "toml 1.1.5+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "ttf-parser",

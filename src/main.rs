@@ -6,6 +6,7 @@ mod bench;
 mod commands;
 mod control;
 mod core_bin;
+mod core_shell;
 mod files;
 mod hc;
 mod keys;
