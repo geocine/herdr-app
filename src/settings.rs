@@ -410,6 +410,9 @@ pub struct Person {
     /// Folders whose subfolders the picker offers to open as spaces.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub project_roots: Vec<String>,
+    /// Windows: start herdr-core when the person logs in (login.rs).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub start_core_at_login: bool,
 }
 
 /// Where a new tab or split starts when no folder is given.
@@ -485,6 +488,7 @@ impl Default for Person {
             colors: BTreeMap::new(),
             new_terminal_folder: NewTerminalFolder::Space,
             project_roots: Vec::new(),
+            start_core_at_login: false,
         }
     }
 }

@@ -871,6 +871,7 @@ impl AppWindow {
             crate::telemetry::set_setting(settings::telemetry_setting(&loaded));
             match loaded {
                 Ok(p) => {
+                    crate::login::sync(p.start_core_at_login);
                     self.person = p;
                     let _ = std::fs::remove_file(file("settings.error"));
                 }
