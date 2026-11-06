@@ -86,7 +86,8 @@ try {
     & $tar -xf "$tmp\$coreFile" -C "$tmp\core"
     $new = "$tmp\core\herdr-core.exe"
     if ($LASTEXITCODE -or -not (Test-Path "$tmp\core\conpty\conpty.dll")) { Fail "the download holds no complete herdr-core" }
-    $version = (& $new --version) -replace "^hc ", ""
+    try { $version = (& $new --version) -replace "^hc ", "" }
+    catch { Fail "Windows would not run the downloaded herdr-core.exe ($($_.Exception.Message.Trim())). Antivirus often holds back a new unsigned program until it has scanned it: try again in a few minutes, or ask whoever manages this PC to allow it." }
     if ($LASTEXITCODE) { Fail "the downloaded herdr-core does not run on this machine" }
     New-Item -ItemType Directory -Force $coreDir | Out-Null
     $core = Join-Path $coreDir "herdr-core.exe"
