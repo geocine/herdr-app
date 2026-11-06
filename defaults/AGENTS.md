@@ -737,6 +737,9 @@ What's about the user, never a look:
 - `project_roots`: folders (`~` for home) whose subfolders the picker
   (`ctrl-shift-k`) offers to open as spaces, e.g. `["C:\\src", "~/code"]`;
   a folder that already has a space isn't offered again.
+- `start_core_at_login`: Windows only. `true` starts herdr-core when the person
+  logs in (a login entry running `herdr-app start-core`, without a window), so
+  terminals lost to a reboot come back before Herdr opens; `false` removes it.
 - `pane_scrollbars`: `false` hides the scroll position thumb at a terminal
   pane's right edge (default `true`). It shows only when the pane has
   scrollback — never on the alternate screen (editors, pagers) — and
