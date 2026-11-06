@@ -4,6 +4,23 @@ Herdr is a desktop app for terminals and coding agents. Keep work in spaces, see
 
 ## Install
 
+### The geocine fork (Windows)
+
+This branch is a fork with Git Bash folder tracking, a fixed folder per space,
+open-a-folder-as-a-space, and terminals that come back after a reboot (screen
+and agents resumed). Install it, app and patched herdr-core together, in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/geocine/herdr-app/geocine/distribution/install-geocine.ps1 | iex
+```
+
+It replaces an installed herdr-core in place (running terminals keep running),
+makes Git Bash the core's shell if none is set, and adds the folder report to
+`~/.bashrc`; set `HERDR_NO_GIT_BASH=1` first to skip that. The fork never
+updates itself from upstream: run the line again to update.
+Read [the installer](distribution/install-geocine.ps1) first if you prefer.
+Releases are made with `scripts/fork-release.ps1 -Publish`.
+
 ### Linux and macOS
 
 ```sh
