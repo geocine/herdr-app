@@ -60,8 +60,12 @@ The agent menu checks and starts agents in the remote Unix user's
 login/interactive shell (sh, bash, zsh, dash, ksh or fish), including its
 configured PATH. Other shells keep the sh launcher.
 `terminal.open --folder /path --place down` starts the split in that folder,
-including when `--argv` supplies a program. Without `--folder`, it follows the
-focused terminal's folder. If an inherited local folder was deleted, new spaces,
+including when `--argv` supplies a program. Without `--folder`, it starts in the
+space's own folder (settings `new_terminal_folder: "space"`, the default), or
+follows the focused terminal's folder with `"focused"`.
+`space.set-folder --folder /path` changes the shown space's folder;
+`space.open --folder /path` shows the space already in that folder or makes one.
+If an inherited local folder was deleted, new spaces,
 tabs and splits retry in that machine's home. An explicit invalid folder
 still fails.
 `hc machine ls` lists machines. Use `hc run --on vps ...`, `hc exec --on vps ...`

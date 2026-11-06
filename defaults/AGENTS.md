@@ -110,10 +110,13 @@ the highlighted line shows where it will land.
   a space nobody named is called after where its first terminal is now
   (its repo, else its folder, `~` at home) and follows it; once named
   (`space.rename`), the name stays; renaming to "" goes back.
-  `spaces()[i].named` says which. Where a space is now is its terminals'
-  live folders (`panes()[i].cwd`), not the folder it was made in: new
-  tabs start where its focused pane is, and the default mods take a
-  space's repo from its first terminal.
+  `spaces()[i].named` says which. Each space has its own folder
+  (`spaces()[i].folder`: where it was made, or set with `space.set-folder`).
+  With settings.json's `new_terminal_folder` at `"space"` (the default), new
+  tabs and splits start there and an unnamed space is called after it, so a
+  `cd` elsewhere doesn't move or rename the space. With `"focused"`, new tabs
+  start where its focused pane is now and an unnamed space follows its first
+  terminal. The default mods take a space's repo from its first terminal.
   If starting in an inherited folder fails, new spaces, tabs and splits retry in
   that machine's home. Explicit invalid folders still fail.
 - A **tab** is a piece of work in a space: its terminals and how they're
@@ -563,11 +566,16 @@ The main ones:
   terminals start in that machine's home unless folder, and its tabs and
   splits stay there; `spaces()` gives each space's `machine`, null here),
   `space.close {id?, confirmed?}`, `space.rename {id?, name}` ("": Herdr's name again),
-  `space.move {id, index}`, `space.select {index | id}`, `space.next`, `space.prev`.
+  `space.move {id, index}`, `space.select {index | id}`, `space.next`, `space.prev`,
+  `space.set-folder {id?, folder}` (the folder its new tabs and splits start in),
+  `space.open {folder}` (this computer: shows the space already in that folder,
+  else makes one there). A person running either without a folder picks one.
   With no `argv`, the target core chooses that machine's default shell (PowerShell 7 when available on Windows).
 - Tabs: `tab.new {name?, space?, folder?, argv?, task?, focus?}` (argv: an
   agent to run, task: its first message). Agents run in your interactive
-  shell (including fish), which stays open after the agent exits. A terminal
+  shell (including fish), which stays open after the agent exits. On Windows,
+  when herdr-core's `shell` (its config.toml) is a POSIX shell such as Git Bash,
+  agents start in that shell as a login shell; otherwise in PowerShell. A terminal
   that exits with a nonzero code within two seconds of launch shows an error
   toast with its exit code and last output lines. Or `tab.new {name?, space?, mod,
   props?, focus?}` for a tab whose only pane is a mod (a file, a board; split a shell
@@ -785,6 +793,12 @@ What's about the user, never a look:
   `true`), and to PRIMARY on Linux. Set `false` to leave both untouched while
   keeping the selection visible; `terminal.copy` (Cmd+C/Ctrl+Shift+C) still
   copies it. Hold Shift while dragging in programs that capture the mouse.
+- `new_terminal_folder`: `"space"` (default) starts new tabs and splits in the
+  space's own folder (`space.set-folder`); `"focused"` starts them where the
+  focused terminal is now.
+- `project_roots`: folders (`~` for home) whose subfolders the picker
+  (`ctrl-shift-k`) offers to open as spaces, e.g. `["C:\\src", "~/code"]`;
+  a folder that already has a space isn't offered again.
 - `pane_scrollbars`: `false` hides the scroll position thumb at a terminal
   pane's right edge (default `true`). It shows only when the pane has
   scrollback — never on the alternate screen (editors, pagers) — and
