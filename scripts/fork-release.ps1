@@ -73,7 +73,10 @@ try {
         if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw "-Publish needs the GitHub CLI (winget install GitHub.cli, then gh auth login)" }
         $tag = "geocine-" + (Get-Date -Format "yyyyMMdd-HHmm")
         $notes = "herdr-app $appVersion ($appSha) and herdr-core $coreVersion ($coreSha), geocine fork, Windows x64.`n`nInstall:`n``````powershell`npowershell -c `"irm https://raw.githubusercontent.com/$Repo/geocine/distribution/install-geocine.ps1 | iex`"`n``````"
-        Run @("gh", "release", "create", $tag, "--repo", $Repo, "--target", "geocine", "--title", "Herdr geocine $tag", "--notes", $notes,
+        # A file: Windows PowerShell mangles quotes inside a program's arguments.
+        $notesFile = Join-Path $stage "notes.md"
+        [IO.File]::WriteAllText($notesFile, $notes)
+        Run @("gh", "release", "create", $tag, "--repo", $Repo, "--target", "geocine", "--title", "Herdr geocine $tag", "--notes-file", $notesFile,
             "$out\herdr-app-windows-x86_64.tar.gz", "$out\herdr-core-windows-x86_64.zip", "$out\SHA256SUMS")
         Write-Host "Published $tag on $Repo."
     }
