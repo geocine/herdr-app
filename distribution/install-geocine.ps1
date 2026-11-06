@@ -101,8 +101,9 @@ try {
     $core = Join-Path $coreDir "herdr-core.exe"
     if (Test-Path $core) {
         # Swapped the planned way, so its terminals keep running.
-        & $core update --from $new | Out-Null
-        if ($LASTEXITCODE) { Fail "updating $core failed (see above)" }
+        # Refused when the core there is newer than the fork's: the fork needs rebuilding on it.
+        $said = & $core update --from $new 2>&1 | Out-String
+        if ($LASTEXITCODE) { Fail "replacing $core with the fork's $version failed: $($said.Trim())" }
         Write-Host "herdr-core updated to $version (fork)."
     } else {
         Copy-Item -Recurse -Force "$tmp\core\herdr-core.exe", "$tmp\core\conpty" $coreDir
