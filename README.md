@@ -1,60 +1,79 @@
-# Herdr (geocine fork)
+<p align="center">
+  <img src="assets/icons/herdr-ui-icon-clean.png" alt="Herdr geocine fork logo" width="160">
+</p>
 
-A fork of [herdrdev/herdr-app](https://github.com/herdrdev/herdr-app), the
-desktop app for terminals and coding agents. For what Herdr is and how to use
-it, read **[the original README](https://github.com/herdrdev/herdr-app/blob/master/README.md)**.
+<h1 align="center">Herdr — geocine fork</h1>
 
-This fork runs on Windows with its own herdr-core fork,
-[geocine/herdr-core](https://github.com/geocine/herdr-core/tree/geocine). The
-`geocine` branch is rebased on upstream `master`.
+<p align="center"><b>Herdr, made for Windows.</b><br>
+Terminals and coding agents that keep running, even after a reboot.</p>
 
-## Install (Windows)
+---
 
-In PowerShell:
+## What is this?
+
+- A fork of [Herdr](https://github.com/herdrdev/herdr-app).
+- Made and tested for **Windows** and **Git Bash**.
+- Comes with its own core: [geocine/herdr-core](https://github.com/geocine/herdr-core/tree/geocine).
+- New to Herdr? Read the [original README](https://github.com/herdrdev/herdr-app/blob/master/README.md).
+
+## Install
+
+Open **PowerShell**. Paste this:
 
 ```powershell
 powershell -c "irm https://raw.githubusercontent.com/geocine/herdr-app/geocine/distribution/install-geocine.ps1 | iex"
 ```
 
-This installs the app and the fork's herdr-core together, both from the latest
-[fork release](https://github.com/geocine/herdr-app/releases). An herdr-core
-that is already installed is replaced in place, so running terminals keep
-running. If Git Bash is installed and the core has no shell set yet, the
-installer makes Git Bash its shell and adds the folder report to `~/.bashrc`;
-set `HERDR_NO_GIT_BASH=1` first to skip that.
+Done. It installs the app **and** the core.
 
-The fork never updates itself or the core from upstream. To update, run the
-same line again. Read [the installer](distribution/install-geocine.ps1) first
-if you prefer.
+- **Update:** run the same line again. Herdr tells you when a new version is out.
+- **Your terminals keep running** during the install.
+- **Git Bash** becomes the default shell, if you have it.
+  Don't want that? Set `HERDR_NO_GIT_BASH=1` first.
+- Want to check the script first? [Read it here](distribution/install-geocine.ps1).
 
 ## What's new in this fork
 
-- **Terminals come back after a reboot.** Kept terminals come back with their
-  screen and folder, and the coding agent that was running comes back to that
-  tab's own conversation: Claude Code, Codex, pi, OpenCode and Grok. With
-  several tabs running one agent in one folder, each tab gets its own
-  conversation back (this needs the fork's herdr-core).
-- **herdr-core starts at login** on Windows (`start_core_at_login` in
-  settings), so lost terminals are back before Herdr opens.
-- **Git Bash:** folders are tracked in Git Bash, and agents use the core's
-  Git Bash.
-- **Spaces have folders:** each space keeps its own folder, and the spaces
-  `+` button and the New menu open a folder as a space.
-- **Versions against upstream:** Settings → Updates shows, for Herdr and
-  herdr-core, the upstream commit each build is based on and how far the
-  fork is ahead of it.
-- **No usage data, no feedback:** nothing is collected, kept or sent, whatever
-  settings.json says. Feedback is not supported in this forked build.
-- **One-line install and fork releases** (see above). A build from source
-  never updates the core after an app update.
+### Reboot-proof
+- Your terminals come back after a reboot, with the same screen and folder.
+- Your agent comes back to **the same conversation**.
+  Works with Claude Code, Codex, pi, OpenCode and Grok.
+- Many tabs with the same agent in one folder? Each tab gets **its own**
+  conversation back.
+- Turn on `start_core_at_login` in settings: your terminals are back before you
+  even open Herdr.
+
+### Windows + Git Bash
+- Herdr follows your folder when you `cd` in Git Bash.
+- Agents started from Git Bash (`pi`, `codex`, `opencode`) are seen and resumed.
+- Agents use Git Bash too.
+
+### Spaces
+- Each space keeps its own folder.
+- Open any folder as a space: the `+` button, or the New menu.
+
+### Updates
+- You get a notice when a new fork version is out. **On** by default.
+- You can also get a notice when upstream Herdr has new changes. **Off** by default.
+- Settings → Updates: a switch for each, and a **Check for updates** button.
+- It also shows how this build compares to upstream.
+
+### Settings
+- Settings → Look: show or hide the **Files** and **Changes** panels.
+
+### Privacy
+- **No usage data.** Nothing is collected or sent.
+- **No feedback sending.** The button is there, but nothing is sent.
+
+### Look
+- New logo: the Herdr ram in geocine green.
 
 ## Make a release
+
+For the fork owner. Needs `gh`, and both repos on the `geocine` branch.
 
 ```powershell
 scripts/fork-release.ps1 -Publish
 ```
 
-It builds the app and herdr-core (the checkout in `..\herdr-core`, so have
-both on `geocine`) and publishes a GitHub release on `geocine/herdr-app`
-(needs `gh`). See the script's header for its options. To build from source, see
-[the original README](https://github.com/herdrdev/herdr-app/blob/master/README.md#build-from-source).
+Build from source: see the [original README](https://github.com/herdrdev/herdr-app/blob/master/README.md#build-from-source).
