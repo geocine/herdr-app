@@ -797,7 +797,7 @@ impl AppWindow {
         std::thread::spawn(move || {
             if let Ok(s) = core.call("server.status", json!({})) {
                 let text = |k: &str| s.get(k).and_then(Value::as_str).map(str::to_owned);
-                crate::update::set_core(text("version").map(|v| v.trim_start_matches("hc ").to_owned()), text("installed_by"));
+                crate::update::set_core(text("version").map(|v| v.trim_start_matches("hc ").to_owned()), text("installed_by"), crate::update::Build::of_core(&s));
             }
         });
     }

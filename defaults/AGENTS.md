@@ -689,6 +689,11 @@ What's about the user, never a look:
   Settings → Updates keeps app and core actions together;
   its What's new button opens the waiting update's release range, or this
   version's notes, in the What's new window. Reading never clears the waiting-update dot.
+  Under each version it shows where that build sits against upstream, read from
+  git when it was built (`updates().app.build`, `core.build`): the upstream
+  commit it's based on, how far upstream had moved on, and a fork's name,
+  commits on top and release tag. A build without git, or an older core, shows
+  only its version.
   Rare spotlight releases open What’s new after restart, once; otherwise a
   quiet Updated pill lasts for that launch. A build from source never updates.
   Curated notes come from the bundled root `CHANGELOG.md`; remote notes and

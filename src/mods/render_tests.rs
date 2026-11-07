@@ -721,6 +721,44 @@ fn settings_sections_and_updates(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn updates_show_where_each_build_sits(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let show = |cx: &mut TestAppContext, app: Value, core: Value| {
+        let mut p = props();
+        p["section"] = json!("updates");
+        let mut u = updates("source", "current");
+        u["app"]["build"] = app;
+        u["core"]["build"] = core;
+        describe(cx, &staged, "frame/settings", true, p, u, None).unwrap()
+    };
+    let fork = json!({"sha":"9ca8e09", "fork":"geocine", "ahead":10, "tag":"geocine-20261106-2310", "upstream_version":"0.1.13", "upstream_sha":"cfcf836", "behind":0});
+    let core = json!({"sha":"dba5a5d", "fork":"geocine", "ahead":7, "tag":null, "upstream_version":"0.1.18", "upstream_sha":"c6b316f", "behind":3});
+    let tree = show(cx, fork, core);
+    for text in [
+        "0.1.13 at cfcf836: upstream's latest when built.",
+        "Fork geocine",
+        "9ca8e09, 10 commits ahead of upstream. Release geocine-20261106-2310.",
+        "0.1.18 at c6b316f, 3 commits behind upstream when built.",
+        "dba5a5d, 7 commits ahead of upstream.",
+    ] {
+        assert!(tree.contains(text), "missing {text:?}: {tree}");
+    }
+    // Upstream itself: no fork row, its release on the upstream row.
+    let upstream = json!({"sha":"cfcf836", "fork":null, "ahead":0, "tag":"v0.1.13", "upstream_version":"0.1.13", "upstream_sha":"cfcf836", "behind":1});
+    let tree = show(cx, upstream, Value::Null);
+    assert!(tree.contains("0.1.13 at cfcf836, 1 commit behind upstream when built. Release v0.1.13."), "{tree}");
+    assert!(!tree.contains("Fork"), "{tree}");
+    // No git, and an older core: the plain versions, as before.
+    let tree = show(cx, Value::Null, Value::Null);
+    assert!(!tree.contains("Upstream") && !tree.contains("Fork"), "{tree}");
+    assert!(tree.contains("herdr-core 0.1.5"), "{tree}");
+    // Only a commit (set where it was built, no upstream to compare with).
+    let tree = show(cx, json!({"sha":"abc1234"}), Value::Null);
+    assert!(tree.contains("Built from") && tree.contains("abc1234."), "{tree}");
+}
+
+#[gpui::test]
 fn animated_images_advance_with_explicit_and_implicit_ids(cx: &mut TestAppContext) {
     use gpui::{IntoElement as _, http_client::{AsyncBody, FakeHttpClient, Response}};
     use image::{Delay, Frame, Rgba, RgbaImage, codecs::gif::GifEncoder};
