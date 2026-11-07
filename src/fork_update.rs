@@ -180,7 +180,8 @@ pub fn notice_for(state: &State, on: Notices) -> Option<Notice> {
     let commits = |b: &Option<Behind>| b.as_ref().map_or(0, |b| b.commits);
     let (app, core) = (commits(&up.app), commits(&up.core));
     let base = |b: &Option<Behind>| b.as_ref().map_or("", |b| b.base.as_str()).to_owned();
-    let key = format!("upstream:{}:{}", base(&up.app), base(&up.core));
+    // The counts are part of it: a closed one comes back once upstream has more.
+    let key = format!("upstream:{}:{app}:{}:{core}", base(&up.app), base(&up.core));
     if app + core == 0 || closed(&key) {
         return None;
     }
@@ -384,6 +385,10 @@ pub fn dismiss(key: &str) {
     COPIED.store(false, Ordering::Relaxed);
     with_state(|s| {
         if !s.dismissed.iter().any(|d| d == key) {
+            // One upstream notice is closed at a time: the latest count replaces the last.
+            if key.starts_with("upstream:") {
+                s.dismissed.retain(|d| !d.starts_with("upstream:"));
+            }
             s.dismissed.push(key.to_owned());
             save(s);
         }
@@ -617,10 +622,16 @@ mod tests {
         assert_eq!(n.link.1, "https://github.com/herdrdev/herdr-core/compare/c6b316f...master");
         state.upstream = Some(upstream_of(0, Some(0)));
         assert_eq!(notice_for(&state, on), None);
-        // Closed: until the fork moves to a new base.
+        // Closed: until upstream has more commits, or the fork moves to a new base.
         state.upstream = Some(upstream_of(5, Some(2)));
         state.dismissed = vec![notice_for(&state, on).unwrap().key];
         assert_eq!(notice_for(&state, on), None);
+        state.upstream.as_mut().unwrap().app.as_mut().unwrap().commits = 6;
+        assert_eq!(notice_for(&state, on).unwrap().label, "Upstream has 6 new commits for Herdr and 2 for herdr-core since this fork's base");
+        state.dismissed = vec![notice_for(&state, on).unwrap().key];
+        state.upstream.as_mut().unwrap().core.as_mut().unwrap().commits = 3;
+        assert!(notice_for(&state, on).is_some(), "herdr-core's count grew");
+        state.dismissed = vec![notice_for(&state, on).unwrap().key];
         state.upstream.as_mut().unwrap().app.as_mut().unwrap().base = "1234567".into();
         assert!(notice_for(&state, on).is_some());
         // A newer release comes first.
