@@ -693,6 +693,29 @@ export default class Settings extends View {
 
   // Updates --------------------------------------------------------------
 
+  // Where a build sits against upstream, from git when it was built: the
+  // upstream commit it's based on, then the fork on top. Nothing without git
+  // (or from a core that doesn't say).
+  sits(t, b) {
+    if (!b) return [];
+    const commits = (n) => `${n} commit${n === 1 ? "" : "s"}`;
+    const fork = Boolean(b.ahead || b.fork);
+    const upstream = Boolean(b.upstream_sha || b.upstream_version);
+    const release = b.tag ? ` Release ${b.tag}.` : "";
+    const rows = [];
+    if (upstream) {
+      const at = b.upstream_version && b.upstream_sha ? `${b.upstream_version} at ${b.upstream_sha}` : b.upstream_version || b.upstream_sha;
+      const where = b.behind ? `, ${commits(b.behind)} behind upstream when built.` : b.behind === 0 ? ": upstream's latest when built." : ".";
+      rows.push(this.row(t, "Upstream", at + where + (fork ? "" : release), div()));
+    }
+    if (fork || (!upstream && (b.sha || b.tag))) {
+      const parts = [b.sha, b.ahead ? `${commits(b.ahead)} ahead of upstream` : null].filter(Boolean);
+      const about = (parts.length ? `${parts.join(", ")}.` : "") + release;
+      rows.push(this.row(t, fork ? (b.fork ? `Fork ${b.fork}` : "Fork") : "Built from", about.trim(), div()));
+    }
+    return rows;
+  }
+
   updates(t) {
     const u = updates();
     const at = (secs) => {
@@ -743,9 +766,11 @@ export default class Settings extends View {
       .child(this.row(t, `Herdr ${u.app.version}`, app[0], h_flex().gap(8).flex_none()
         .child(this.button(t, "st-whats-new", "What's new", () => { closeOverlay(props()?.overlay); run("app.whats_new"); }))
         .when(Boolean(app[1]), (el) => el.child(app[1]))))
+      .children(this.sits(t, u.app.build))
       .child(div().h(18))
       .child(this.heading(t, "herdr-core"))
       .child(this.row(t, `herdr-core ${c.version ?? ""}`, core[0], core[1] ?? div()))
+      .children(this.sits(t, c.build))
       .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Herdr looks for both every hour and tells you in the corner. herdr-core runs your terminals, so they keep running through its updates."));
   }
 

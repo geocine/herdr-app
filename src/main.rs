@@ -2,6 +2,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod bench;
+#[cfg(test)]
+mod build_git;
 mod commands;
 mod control;
 mod core_bin;
