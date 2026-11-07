@@ -89,7 +89,8 @@ pub fn client(args: &[String]) -> i32 {
         },
         [verb] if verb == "status" => json!({ "status": true }),
         [verb] if verb == "ls" => json!({ "ls": true }),
-        [verb, message] if verb == "feedback" => json!({ "do": "app.feedback", "args": { "message": message, "from": "agent" } }),
+        // Nothing to draft or send in this fork (feedback.rs).
+        [verb, ..] if verb == "feedback" => return fail(crate::feedback::NOT_SUPPORTED),
         [verb, command, rest @ ..] if verb == "do" => match parse_args(rest) {
             Ok(a) => json!({ "do": command, "args": a }),
             Err(e) => return fail(&e),
@@ -98,12 +99,6 @@ pub fn client(args: &[String]) -> i32 {
     };
     let mut stream = match UnixStream::connect(socket()) {
         Ok(s) => s,
-        Err(_) if args.first().is_some_and(|v| v == "feedback") => {
-            let body = crate::feedback::draft(&args[1], "", 0, "agent", "other");
-            println!("{}", serde_json::to_string_pretty(&body).unwrap_or_default());
-            eprintln!("Herdr must be open to review and send this feedback. Nothing was sent; core version and layout will reflect the open window.");
-            return 1;
-        }
         Err(e) => return fail(&format!("no Herdr window at {}: {e}", socket().display())),
     };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(35)));
