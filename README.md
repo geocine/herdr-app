@@ -5,7 +5,7 @@
 <h1 align="center">Herdr — geocine fork</h1>
 
 <p align="center"><b>Herdr, made for Windows.</b><br>
-Terminals and coding agents that keep running, even after a reboot.</p>
+Your terminals and coding agents come back after a reboot.</p>
 
 ---
 
@@ -64,9 +64,6 @@ Done. It installs the app **and** the core.
 ### Privacy
 - **No usage data.** Nothing is collected or sent.
 - **No feedback sending.** The button is there, but nothing is sent.
-
-### Look
-- New logo: the Herdr ram in geocine green.
 
 ## Make a release
 
