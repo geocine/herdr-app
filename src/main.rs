@@ -9,6 +9,7 @@ mod control;
 mod core_bin;
 mod core_shell;
 mod files;
+mod fork_update;
 mod hc;
 mod keys;
 mod layout;

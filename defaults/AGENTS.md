@@ -660,7 +660,7 @@ The main ones:
   `layout.clone {name, as?}` (duplicate, then switch; default `<name>-copy`).
 - App: `mod.clone {name, as?}` (duplicate; default `<name>-copy`), `mod.open {name}` (again: closes it), `overlay.close {id?}`, `app.help` (again: closes it), `app.palette` (again: closes it), `app.settings {section?}`
   (sections: `look`, `machines`, `alerts`, `updates`, `privacy`; Machines lists, updates, renames and removes ssh machines; settings edit the same files you do).
-  `app.check_updates` (only a successful check reports Up to date; a failed check clears the checked time and can be retried), `app.update_core` (a newer herdr-core of this generation, terminals kept;
+  `app.check_updates` (only a successful check reports Up to date; a failed check clears the checked time and can be retried; this fork: also checks for a newer fork release and upstream commits, see `fork_updates`), `app.update_core` (a newer herdr-core of this generation, terminals kept;
   never one a package manager owns), `app.welcome`, `app.whats_new`, `app.feedback {message?, from?}` (feedback is not supported in this forked build: it opens a window that says so; nothing is ever sent), `app.reset`,
   `app.theme {name}`, `app.zoom_in`, `app.zoom_out`, `app.zoom_reset`,
   `app.update` (restart into a downloaded update).
@@ -807,6 +807,21 @@ What's about the user, never a look:
 - `start_core_at_login`: Windows only. `true` starts herdr-core when the person
   logs in (a login entry running `herdr-app start-core`, without a window), so
   terminals lost to a reboot come back before Herdr opens; `false` removes it.
+- `fork_updates`: this fork's notices in the corner, `{ "release": true,
+  "upstream": false }` by default; Settings → Updates has a toggle for each.
+  `release` tells when a newer release of the fork (geocine/herdr-app on
+  GitHub, tags `geocine-YYYYMMDD-HHMM`) is out, against this build's release
+  tag; a build from source without one is compared by its commit, and says
+  nothing when GitHub doesn't know the commit or the histories went separate
+  ways (a rebase). The fork never updates itself: the notice offers the install
+  line to run again. `upstream` tells when upstream herdr-app or herdr-core
+  master has commits the builds aren't based on (their `upstream_sha`). For each
+  that's on, Herdr asks GitHub's API about once an hour (no account, a generic
+  User-Agent, nothing about the person; answers kept in `.fork-updates.json`).
+  Check for updates in Settings → Updates checks both now and shows what it
+  found, or why it couldn't (offline, GitHub's hourly limit). Closing a notice
+  keeps it closed until a newer release, or a new upstream base. Results are in
+  `updates().fork`.
 - `pane_scrollbars`: `false` hides the scroll position thumb at a terminal
   pane's right edge (default `true`). It shows only when the pane has
   scrollback — never on the alternate screen (editors, pagers) — and

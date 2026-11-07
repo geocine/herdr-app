@@ -338,7 +338,30 @@ export function updates(): {
   checked: number | null;
   checks: boolean;
   checking: boolean;
+  /** This fork's own checks (settings.json `fork_updates`): the latest fork release and
+   *  upstream commits since each build's base, from GitHub. `checked`: unix seconds of the
+   *  last check (null before one); `error`: why it failed, in words. `release.newer`: null
+   *  when it can't tell (`note` says why). `upstream.app` / `core`: null when that build
+   *  doesn't say its base. `install`: the line that installs the latest release. */
+  fork?: {
+    repo: string;
+    repo_url: string;
+    install: string;
+    checking: boolean;
+    checked: number | null;
+    error: string | null;
+    release: { tag: string; url: string; newer: boolean | null; note: string | null; checked: number } | null;
+    upstream: {
+      app: UpdateBehind | null;
+      core: UpdateBehind | null;
+      note: string | null;
+      checked: number;
+    } | null;
+  };
 };
+
+/** Upstream commits on master since a build's base, and GitHub's page of them. */
+export type UpdateBehind = { base: string; commits: number; url: string };
 
 /** Record only spotlight versions actually shown expanded, never collapsed headlines. */
 export function presentUpdateNotes(versions: string[]): null;
