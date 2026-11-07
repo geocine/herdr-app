@@ -155,7 +155,7 @@ fn fixture(populated: bool, props: Value, update: Value) -> BTreeMap<String, Val
         ("settings".into(), serde_json::to_value(crate::settings::Settings::default()).unwrap()),
         ("themes".into(), json!([{"name":"graphite", "colors": &*crate::settings::theme()}])),  ("fonts".into(), json!(["Monospace", "Sans"])),
         ("updates".into(), update),
-        ("telemetry".into(), json!({"enabled":true,"setting":true,"sends":true,"off_because":null,"endpoint":"https://invalid.example", "draft":{},"queued":[],"last_sent":null})),
+        ("telemetry".into(), crate::telemetry::status()),
         ("window".into(), json!({"platform":"linux","titlebar":"none","buttons":true,"maximized":false,"fullscreen":false,"active":true})),
         ("placement".into(), Value::Null),
         ("home".into(), json!("/fixture")), ("appHome".into(), json!("/fixture/app")),
@@ -1092,30 +1092,10 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
         let expected = ["Herdr runs your terminals in the background", "Add your other machines", "Choose your panels", "Make it yours"][page - 1];
         assert!(tree.contains(expected), "welcome page {page}: {tree}");
     }
-    for setup in ["", "this.sent = true;", "this.error = 'Fixture error';"] {
-        let tree = describe(
-            cx,
-            &staged,
-            "frame/feedback",
-            true,
-            props(),
-            updates("current", "current"),
-            Some(setup),
-        )
-        .unwrap();
-        assert!(tree.contains("feedback"), "{tree}");
-        if setup.is_empty() {
-            assert!(
-                tree.contains("Input #") && tree.contains("Textarea #") && tree.contains("A prefilled message"),
-                "{tree}"
-            );
-        } else {
-            assert!(
-                tree.contains(if setup.contains("sent") { "Sent. Thanks" } else { "Fixture error" }),
-                "{tree}"
-            );
-        }
-    }
+    // This fork sends no feedback: the window only says so, with no form to fill.
+    let tree = describe(cx, &staged, "frame/feedback", true, props(), updates("current", "current"), None).unwrap();
+    assert!(tree.contains(crate::feedback::NOT_SUPPORTED), "{tree}");
+    assert!(!tree.contains("Input #") && !tree.contains("Textarea #") && !tree.contains("feedback-send"), "{tree}");
     for query in ["settings", "no-such-command"] {
         let tree = describe(
             cx,

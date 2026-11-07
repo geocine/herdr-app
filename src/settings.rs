@@ -98,6 +98,7 @@ const THEMES: &[(&str, &str)] = &[
     ("atom-one-dark", include_str!("../defaults/themes/atom-one-dark.json")),
     ("win98", include_str!("../defaults/themes/win98.json")),
 ];
+#[allow(dead_code)] // Only telemetry.rs used it: off in this fork.
 pub const SHIPPED_THEMES: &[&str] = &["atom-one-dark", "win98"];
 
 /// `themes/<name>.json`: a palette, plus `colors` overrides like settings.json's.
@@ -387,8 +388,9 @@ pub struct Person {
     /// The panels' font (their sizes follow zoom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font: Option<String>,
-    /// Anonymous usage data (telemetry.rs). On unless set to false.
-    #[serde(skip_serializing_if = "is_true")]
+    /// Anonymous usage data: always off in this fork (telemetry.rs). Still
+    /// read, so an old `"telemetry": true` parses, but ignored and never written.
+    #[serde(skip_serializing)]
     pub telemetry: bool,
     /// Allow terminal programs (including remote ones) to copy text locally.
     #[serde(skip_serializing_if = "is_true")]
@@ -487,7 +489,7 @@ impl Default for Person {
             terminal_line_height: 1.0,
             terminal_scroll_speed: 1.0,
             ui_font: None,
-            telemetry: true,
+            telemetry: false,
             clipboard_write: true,
             copy_on_select: true,
             pane_scrollbars: true,
@@ -730,16 +732,10 @@ pub fn load_person() -> Result<Person, String> {
     Ok(person)
 }
 
-/// The value of settings.json's own `telemetry`, read even when the file has
-/// another problem: an explicit `false` always counts.
-pub fn telemetry_setting(person: &Result<Person, String>) -> bool {
-    match person {
-        Ok(p) => p.telemetry,
-        Err(_) => {
-            let raw = std::fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
-            raw.and_then(|v| v.get("telemetry").and_then(serde_json::Value::as_bool)).unwrap_or(true)
-        }
-    }
+/// Usage data is always off in this fork: settings.json's `telemetry` (true
+/// or not) never turns it on.
+pub fn telemetry_setting(_person: &Result<Person, String>) -> bool {
+    false
 }
 
 pub fn write_person(person: &Person) -> std::io::Result<()> {
@@ -1019,6 +1015,17 @@ mod tests {
         let clicks = crate::layout_sync::State { theme: Some(ThemeChoice::One("ink".into())), ..Default::default() };
         clicks.apply(&mut win98);
         assert_eq!(Settings::compose(&person, &win98.look, true).theme, "ink");
+    }
+
+    /// An old settings.json's `"telemetry": true` still parses, but turns
+    /// nothing on and isn't written back.
+    #[test]
+    fn telemetry_in_settings_is_read_but_ignored() {
+        let p: Person = serde_json::from_str("{\"telemetry\": true}").unwrap();
+        assert!(!super::telemetry_setting(&Ok(p.clone())));
+        assert!(!super::telemetry_setting(&Err("broken".into())));
+        assert!(serde_json::to_value(&p).unwrap().get("telemetry").is_none());
+        assert!(!Person::default().telemetry);
     }
 
     /// The guide agents read (written to the home folder) explains every

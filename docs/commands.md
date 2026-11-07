@@ -495,7 +495,7 @@ No arguments.
 
 ## `app.feedback`
 
-Draft feedback for the person to review and send (from: person or agent).
+Feedback is not supported in this forked build: opens a window that says so. Nothing is sent.
 
 | Argument | Required |
 |---|---|

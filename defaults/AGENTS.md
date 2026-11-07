@@ -661,7 +661,7 @@ The main ones:
 - App: `mod.clone {name, as?}` (duplicate; default `<name>-copy`), `mod.open {name}` (again: closes it), `overlay.close {id?}`, `app.help` (again: closes it), `app.palette` (again: closes it), `app.settings {section?}`
   (sections: `look`, `machines`, `alerts`, `updates`, `privacy`; Machines lists, updates, renames and removes ssh machines; settings edit the same files you do).
   `app.check_updates` (only a successful check reports Up to date; a failed check clears the checked time and can be retried), `app.update_core` (a newer herdr-core of this generation, terminals kept;
-  never one a package manager owns), `app.welcome`, `app.whats_new`, `app.feedback {message?, from?}` (from `"person"` or `"agent"`; opens a review window, where the person can paste up to 3 screenshots; never sends until the person clicks Send), `app.reset`,
+  never one a package manager owns), `app.welcome`, `app.whats_new`, `app.feedback {message?, from?}` (feedback is not supported in this forked build: it opens a window that says so; nothing is ever sent), `app.reset`,
   `app.theme {name}`, `app.zoom_in`, `app.zoom_out`, `app.zoom_reset`,
   `app.update` (restart into a downloaded update).
   Add machine lists all named ssh-config hosts in a scrollable list. Machines
@@ -811,14 +811,11 @@ What's about the user, never a look:
   pane's right edge (default `true`). It shows only when the pane has
   scrollback — never on the alternate screen (editors, pagers) — and
   drags to move through it.
-- `telemetry`: `false` stops anonymous usage data and deletes what wasn't
-  sent (on when absent; Settings → Privacy shows each report word for
-  word, and `telemetry()` in mods). Once a day the app sends counts:
-  version, OS, which known agents ran, how many spaces, tabs and
-  terminals, which layouts, shipped mods and commands were used. Never
-  terminal content, names of files, folders, spaces or the person's own
-  mods; nothing from herdr-core. `DO_NOT_TRACK=1` or `HERDR_TELEMETRY=0`
-  turns it off for one run. A build from source never sends.
+- `telemetry`: ignored. This build never collects, keeps or sends usage
+  data, whatever this says (an old `true` still parses and does
+  nothing). It deletes what an earlier build kept
+  in the home's `telemetry/` folder. `telemetry()` in mods always reports
+  it off.
 
 ## Programs: `programs.json`
 
@@ -1022,8 +1019,7 @@ definite height from their container: a `flex_1()` chain with no explicit
 plain scroll area and the virtual-list pair; `list` and `uniform_list` keep
 their own position, so pair a `Scrollbar` of the same id instead.
 `.on_drop((event, cx) => …)` on a plain layout element receives external files as
-`event.paths` (absolute paths). The feedback form accepts dropped images with
-the same limits, previews and removal as picked images.
+`event.paths` (absolute paths).
 `.id("file-row").drag_paths([absolutePath], { on: machine })` makes a plain layout
 element a file/folder drag source for terminals. Omit `on` (or use null)
 for local paths; remote paths retain their source machine. Ordinary clicks

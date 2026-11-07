@@ -458,7 +458,7 @@ export default class Welcome extends View {
           .child(div().text_size(13.5).font_semibold().text_color(t.foreground).child("More examples in Settings"))
           .child(this.para(t, "Settings \u203a Look has more layouts to try or start from, Herdr 98 among them. Your agent can copy any of them and change anything.")),
       )
-      .child(this.para(t, "Something off or missing? Settings \u203a Send feedback. We read every one."));
+      .child(this.para(t, "Feedback is not supported in this forked build."));
   }
 
   render() {
