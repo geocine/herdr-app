@@ -15,7 +15,7 @@ The default app home is `~/.config/herdr-app`, including on macOS and Windows (u
 `XDG_CONFIG_HOME` changes the config root. `HERDR_APP_HOME` selects an app home directly and takes precedence.
 
 This folder holds your settings, keys, layouts, mods, generated agent guide and API types.
-It also holds mod data, shared state, window positions, this screen's focus and zoom, update notes and cached media, and telemetry while enabled.
+It also holds mod data, shared state, window positions, this screen's focus and zoom, update notes and cached media.
 Mods may store sensitive data here. Herdr does not encrypt this folder.
 The [installed guide's file map](../defaults/AGENTS.md#the-files) explains the files.
 
@@ -44,25 +44,14 @@ Do not assume every download is notarized or signed.
 
 ## Telemetry
 
-Usage telemetry is **on by default**. Release builds send a small daily report to `https://telemetry.herdr.dev/v1/report` with a random install ID.
-Reports include app and core versions, OS and architecture, bucketed usage time and counts, known agent names, built-in layout names, mod counts, app command names, and fixed event counters.
-Custom layout names become `custom`; custom mod names are not sent.
-Terminal text, prompts, file contents, folder paths and free-text names are not included.
+Usage telemetry is **off, permanently**, in this fork. Herdr never collects, stores or sends usage data, in any build, whatever `settings.json` (`"telemetry"`), `HERDR_TELEMETRY`, `HERDR_TELEMETRY_URL` or `HERDR_APP_RELEASE` say.
+There is no usage-report endpoint, install ID or background thread. On start, Herdr deletes the `telemetry/` folder an earlier build may have left in its home (install ID, the day so far, unsent reports). It cannot recall reports an upstream release already sent.
+**Settings → Privacy** says so; there is nothing to turn on.
 
-Turn it off in **Settings → Privacy**. That page also lets you inspect the report.
-Or set this field in your existing `settings.json`:
+Telemetry being off does not stop update checks, update-note media downloads or mod network requests.
 
-```json
-{
-  "telemetry": false
-}
-```
+## Feedback
 
-Turning it off deletes the local install ID and unsent reports. It cannot recall reports already sent.
-For one run, set `DO_NOT_TRACK=1` or `HERDR_TELEMETRY=0`. CI environments disable collection too.
-Ordinary source builds collect locally while enabled but do not send, unless pointed at a test endpoint with `HERDR_TELEMETRY_URL`.
-
-Telemetry being off does not stop update checks, mod network requests or feedback you choose to send.
-Feedback is drafted for you to review and send, not sent silently.
+Feedback is not supported in this forked build. Herdr never sends feedback, to `telemetry.herdr.dev` or anywhere else, whatever `HERDR_FEEDBACK_URL` or `HERDR_APP_RELEASE` say. Where upstream offers it (Settings, `app.feedback`, `herdr-app feedback`), this build says so instead.
 
 [Back to Herdr](../README.md)

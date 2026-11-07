@@ -55,7 +55,7 @@ export default class WhatsNew extends View {
         .child(Scrollbar.vertical("wn-body").mode("always").absolute().inset_0()))
       .child(h_flex().flex_none().px(16).py(12).gap(8).items_center().border_t(1).border_color(t.border)
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-        .child(div().pl(6).flex_1().text_size(12).text_color(t.dim).child("Something off or missing? Settings › Send feedback."))
+        .child(div().pl(6).flex_1().text_size(12).text_color(t.dim).child("Feedback is not supported in this forked build."))
         .child(h_flex().id("wn-done").h(30).px(12).items_center().rounded(8).cursor_pointer()
           .text_size(12.5).font_medium().bg(t.solid).text_color(t.solid_foreground).hover(s => s.opacity(0.88))
           .on_click(() => this.done()).child("Got it")));

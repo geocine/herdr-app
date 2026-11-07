@@ -288,6 +288,7 @@ fn clone_mod_at(mods: &Path, name: &str, to: &str) -> std::io::Result<()> {
 /// Mods in use by kind, for telemetry: the shipped ones as shipped (by
 /// name), how many shipped ones were edited, how many are the person's own
 /// (never their names).
+#[allow(dead_code)] // Only telemetry.rs used it: off in this fork.
 pub fn kinds(names: &std::collections::BTreeSet<String>) -> (Vec<String>, usize, usize) {
     let text = std::fs::read_to_string(app_dir().join("installed.json")).unwrap_or_default();
     let installed: Installed = serde_json::from_str(&text).unwrap_or_default();

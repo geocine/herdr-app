@@ -194,6 +194,7 @@ pub fn name(app: &str) -> String {
 
 /// An agent's 7501 `app` as a name Herdr ships (`claude` for `claude-code`),
 /// else `other` (`unknown` when it gave none): never the person's own words.
+#[allow(dead_code)] // Only telemetry.rs used it: off in this fork.
 pub fn agent_name(app: Option<&str>) -> String {
     static NAMES: std::sync::OnceLock<BTreeMap<String, String>> = std::sync::OnceLock::new();
     let names = NAMES.get_or_init(|| {

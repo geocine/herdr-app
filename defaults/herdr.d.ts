@@ -318,32 +318,31 @@ export function updates(): {
 /** Record only spotlight versions actually shown expanded, never collapsed headlines. */
 export function presentUpdateNotes(versions: string[]): null;
 
-/** Anonymous usage data (one report per day, never terminal content). `enabled`: collecting now;
- *  `setting`: settings.json's `telemetry`; `off_because`: an env var that turns it off for this run
- *  (DO_NOT_TRACK, HERDR_TELEMETRY, CI); `sends`: false for a build from source (it never sends).
- *  `draft`: today's report so far; `queued`: finished days waiting to go, exactly as they'll be
- *  sent; `last_sent`: the last one the server took (`at`: unix seconds). Null until it starts. */
+/** Anonymous usage data: always off in this build. Nothing is collected, kept or sent, whatever
+ *  settings.json's `telemetry` says, so `enabled`, `setting` and `sends` are always false, there is
+ *  no `endpoint` or `draft`, `queued` is empty and nothing was ever `last_sent`. */
 export function telemetry(): {
-  enabled: boolean;
-  setting: boolean;
+  enabled: false;
+  setting: false;
   off_because: string | null;
-  sends: boolean;
-  endpoint: string;
-  draft: Record<string, unknown> | null;
+  sends: false;
+  endpoint: null;
+  draft: null;
   queued: Record<string, unknown>[];
-  last_sent: { at: number; report: Record<string, unknown> } | null;
+  last_sent: null;
 } | null;
 
-/** The explicit feedback draft. Sending is restricted to the app-owned feedback frame. */
+/** Feedback is not supported in this forked build: nothing is ever sent. The draft is local only and `available` is always false. */
 export function feedbackPreview(message: string, email: string, images?: number): { body: import("gpui-kit").HostValue; available: boolean };
-/** The clipboard's image, kept for the form (`path` for `image()`); null when it holds none. Frame-only. */
+/** Feedback is not supported in this forked build: always `{ error }` (or null). Frame-only. */
 export function feedbackPasteImage(): { path: string } | { error: string } | null;
-/** Picks image files (at most 3), each kept like a pasted one. Frame-only. */
+/** Feedback is not supported in this forked build: each pick is `{ error }`. Frame-only. */
 export function feedbackPickImages(): Promise<({ path: string } | { error: string })[]>;
-/** Attaches dropped image paths (at most 3), using the picker's conversion and limits. Frame-only. */
+/** Feedback is not supported in this forked build: each path is `{ error }`. Frame-only. */
 export function feedbackAttachImages(paths: string[]): ({ path: string } | { error: string })[];
-/** Drops the form's kept screenshots. Frame-only. */
+/** Deletes screenshots an earlier build kept for its feedback form. Frame-only. */
 export function feedbackClearImages(): null;
+/** Sends nothing: always resolves with "Feedback is not supported in this forked build." Frame-only. */
 export function sendFeedback(body: import("gpui-kit").HostValue, images?: string[]): Promise<string | null>;
 
 /** What the app runs with: the shown layout's look (theme name, fonts, sizes, terminal
