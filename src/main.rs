@@ -3,6 +3,8 @@
 
 mod badge;
 mod bench;
+#[cfg(test)]
+mod build_git;
 mod commands;
 mod control;
 mod core_bin;

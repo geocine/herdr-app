@@ -15,6 +15,11 @@
 # The app is built without HERDR_APP_RELEASE, so it never updates itself or
 # the core from upstream (src/update.rs). Building needs what the two repos
 # need anyway: ZIG and LIBCLANG_PATH set, cargo, Git Bash (for the notices).
+#
+# Both builds read from git where they sit against upstream (their build.rs:
+# the upstream commit, the fork's commits on top), shown in Settings > Updates.
+# The release tag doesn't exist yet while they build, so -Publish hands it to
+# them as HERDR_BUILD_TAG (a -CoreExe core keeps whatever it was built with).
 param(
     [string]$Core = (Join-Path $PSScriptRoot "..\..\herdr-core"),
     [string]$CoreExe,
@@ -28,6 +33,9 @@ $Core = Resolve-Path $Core
 $tar = Join-Path $env:SystemRoot "System32\tar.exe"
 $out = Join-Path $app "dist\fork"
 $stage = Join-Path ([IO.Path]::GetTempPath()) "herdr-fork-release-$PID"
+$tag = if ($Publish) { "geocine-" + (Get-Date -Format "yyyyMMdd-HHmm") } else { $null }
+# Put back after: the caller's later builds must not carry this release's tag.
+$givenTag = $env:HERDR_BUILD_TAG
 
 # Continue: Windows PowerShell turns a program's stderr (cargo's progress) into errors.
 function Run($what) {
@@ -36,7 +44,17 @@ function Run($what) {
     if ($LASTEXITCODE) { throw "failed: $what" }
 }
 
+# The upstream commit a checkout is based on (short), as build.rs finds it.
+function UpstreamBase($repo) {
+    foreach ($ref in "upstream/master", "origin/master", "master") {
+        $found = git -C $repo rev-parse --verify -q "$ref^{commit}"
+        if ($found) { return (git -C $repo rev-parse --short (git -C $repo merge-base HEAD $ref)).Trim() }
+    }
+    "unknown"
+}
+
 try {
+    if ($tag) { $env:HERDR_BUILD_TAG = $tag } else { Remove-Item Env:HERDR_BUILD_TAG -ErrorAction SilentlyContinue }
     Remove-Item -Recurse -Force $out, $stage -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $out, "$stage\core\THIRD-PARTY-NOTICES", "$stage\app\herdr-app" | Out-Null
 
@@ -75,12 +93,13 @@ try {
     $coreVersion = (Select-String -Path (Join-Path $Core "crates\herdr-core\Cargo.toml") -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
     $appSha = (git -C $app rev-parse --short HEAD).Trim()
     $coreSha = (git -C $Core rev-parse --short HEAD).Trim()
-    Write-Host "Packed into ${out}: app $appVersion ($appSha), core $coreVersion ($coreSha)"
+    $appBase = UpstreamBase $app
+    $coreBase = UpstreamBase $Core
+    Write-Host "Packed into ${out}: app $appVersion ($appSha, upstream $appBase), core $coreVersion ($coreSha, upstream $coreBase)"
 
     if ($Publish) {
         if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw "-Publish needs the GitHub CLI (winget install GitHub.cli, then gh auth login)" }
-        $tag = "geocine-" + (Get-Date -Format "yyyyMMdd-HHmm")
-        $notes = "herdr-app $appVersion ($appSha) and herdr-core $coreVersion ($coreSha), geocine fork, Windows x64.`n`nInstall:`n``````powershell`npowershell -c `"irm https://raw.githubusercontent.com/$Repo/geocine/distribution/install-geocine.ps1 | iex`"`n``````"
+        $notes = "herdr-app $appVersion ($appSha) and herdr-core $coreVersion ($coreSha), geocine fork, Windows x64. Based on upstream herdr-app $appBase and herdr-core $coreBase.`n`nInstall:`n``````powershell`npowershell -c `"irm https://raw.githubusercontent.com/$Repo/geocine/distribution/install-geocine.ps1 | iex`"`n``````"
         # A file: Windows PowerShell mangles quotes inside a program's arguments.
         $notesFile = Join-Path $stage "notes.md"
         [IO.File]::WriteAllText($notesFile, $notes)
@@ -89,5 +108,6 @@ try {
         Write-Host "Published $tag on $Repo."
     }
 } finally {
+    if ($null -ne $givenTag) { $env:HERDR_BUILD_TAG = $givenTag } else { Remove-Item Env:HERDR_BUILD_TAG -ErrorAction SilentlyContinue }
     Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
 }
