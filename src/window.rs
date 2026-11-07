@@ -868,6 +868,7 @@ impl AppWindow {
             match loaded {
                 Ok(p) => {
                     crate::login::sync(p.start_core_at_login);
+                    crate::fork_update::set_notices(p.fork_updates);
                     self.person = p;
                     let _ = std::fs::remove_file(file("settings.error"));
                 }
@@ -4445,7 +4446,7 @@ impl AppWindow {
             (Some(a), Some(c)) => Some(format!("Herdr {a} and herdr-core {c} are ready")),
             (Some(a), None) => Some(format!("Herdr {a} is ready")),
             (None, Some(c)) => Some(format!("herdr-core {c} is ready")),
-            (None, None) => None,
+            (None, None) => crate::fork_update::notice().map(|n| n.label),
         }
     }
 
@@ -4454,6 +4455,7 @@ impl AppWindow {
         let app_ready = app_version.is_some();
         let success = self.update_ready.is_none() && self.update_success;
         let label = self.update_ready.clone().or_else(|| success.then(|| format!("Updated to {}", env!("CARGO_PKG_VERSION"))))?;
+        if !success && let Some(pill) = crate::fork_update::pill(&label, cx) { return Some(pill); }
         let dismissal = app_version.map(|v| format!("app:{v}")).unwrap_or_else(|| label.clone());
         if self.update_dismissed.as_ref() == Some(&dismissal) { return None; }
         let pill = div()

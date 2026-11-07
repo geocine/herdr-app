@@ -619,6 +619,92 @@ fn updates_show_where_each_build_sits(cx: &mut TestAppContext) {
     assert!(tree.contains("Built from") && tree.contains("abc1234."), "{tree}");
 }
 
+/// The part of a description from the element with this id to the next one with an id.
+fn element<'a>(tree: &'a str, id: &str) -> &'a str {
+    let mark = format!(":id[Str(\"{id}\")]");
+    let at = tree.find(&mark).unwrap_or_else(|| panic!("no {mark}: {tree}"));
+    let rest = &tree[at + mark.len()..];
+    &tree[at..at + mark.len() + rest.find(":id[").unwrap_or(rest.len())]
+}
+
+#[gpui::test]
+fn updates_show_this_forks_release_and_upstream(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let show = |cx: &mut TestAppContext, fork: Value, setup: Option<&str>| {
+        let mut p = props();
+        p["section"] = json!("updates");
+        let mut u = updates("source", "current");
+        u["fork"] = fork;
+        describe(cx, &staged, "frame/settings", true, p, u, setup).unwrap()
+    };
+    let base = || json!({"repo":"geocine/herdr-app", "repo_url":"https://github.com/geocine/herdr-app/tree/geocine", "install":crate::fork_update::INSTALL, "checking":false, "checked":null, "error":null, "release":null, "upstream":null});
+    // Never checked: where it comes from, the button, both toggles (release on, upstream off).
+    let tree = show(cx, base(), None);
+    for text in ["THIS FORK", "TELL ME IN THE CORNER", "From geocine/herdr-app", "st-fork-repo", "Check for updates", "Not checked yet.", "st-fork-check", "New fork release", "Fork behind upstream"] {
+        assert!(tree.contains(text), "missing {text:?}: {tree}");
+    }
+    assert!(!tree.contains("Latest release") && !tree.contains("st-fork-install"), "{tree}");
+    assert!(element(&tree, "st-fork-notice-release").contains("justify_end"), "release notices are on by default: {tree}");
+    assert!(!element(&tree, "st-fork-notice-upstream").contains("justify_end"), "upstream notices are off by default: {tree}");
+    // A newer release and upstream commits: what to run, where to look.
+    let mut fork = base();
+    fork["checked"] = json!(1700000000);
+    fork["release"] = json!({"tag":"geocine-20261107-1559", "url":"https://github.com/geocine/herdr-app/releases/tag/geocine-20261107-1559", "newer":true, "note":null, "checked":1700000000});
+    fork["upstream"] = json!({"app":{"base":"cfcf836","commits":5,"url":"https://github.com/herdrdev/herdr-app/compare/cfcf836...master"}, "core":{"base":"c6b316f","commits":0,"url":"https://github.com/herdrdev/herdr-core/compare/c6b316f...master"}, "note":null, "checked":1700000000});
+    let tree = show(cx, fork.clone(), None);
+    for text in [
+        "geocine-20261107-1559 is out. To update, run the install line again.",
+        "st-fork-release",
+        "st-fork-install",
+        "install-geocine.ps1 | iex",
+        "st-fork-copy",
+        "Herdr: 5 new commits since this fork's base. herdr-core: nothing new since this fork's base.",
+        "st-fork-commits",
+        "Checked at ",
+    ] {
+        assert!(tree.contains(text), "missing {text:?}: {tree}");
+    }
+    // Up to date, can't tell, and a failed check.
+    fork["release"]["newer"] = json!(false);
+    let tree = show(cx, fork.clone(), None);
+    assert!(tree.contains("Up to date: geocine-20261107-1559 is the latest release.") && !tree.contains("st-fork-install"), "{tree}");
+    fork["release"]["newer"] = Value::Null;
+    fork["release"]["note"] = json!("This build's commit fff0000 isn't on GitHub, so Herdr can't tell if geocine-20261107-1559 is newer.");
+    fork["error"] = json!("Couldn't reach GitHub. Check your connection and try again.");
+    let tree = show(cx, fork.clone(), None);
+    assert!(tree.contains("isn't on GitHub, so Herdr can't tell") && tree.contains("Couldn't reach GitHub."), "{tree}");
+    fork["checking"] = json!(true);
+    let tree = show(cx, fork, None);
+    assert!(!tree.contains("st-fork-check") && tree.contains("Checking"), "{tree}");
+    // The toggles follow settings.json's fork_updates.
+    let tree = show(cx, base(), Some("this.load = async () => {}; this.person = { fork_updates: { release: false, upstream: true } };"));
+    assert!(!element(&tree, "st-fork-notice-release").contains("justify_end"), "{tree}");
+    assert!(element(&tree, "st-fork-notice-upstream").contains("justify_end"), "{tree}");
+    // A build without the fork's checks (upstream): no fork section.
+    let tree = show(cx, Value::Null, None);
+    assert!(!tree.contains("THIS FORK") && !tree.contains("st-fork-check"), "{tree}");
+}
+
+#[gpui::test]
+fn look_turns_the_files_and_changes_panels_on_and_off(cx: &mut TestAppContext) {
+    cx.update(gpui_shell::init);
+    let staged = Staged::new();
+    let mut p = props();
+    p["section"] = json!("look");
+    // Nothing picked yet (the welcome skipped): both on, as the tab bar shows them.
+    let tree = describe(cx, &staged, "frame/settings", true, p.clone(), updates("current", "current"), None).unwrap();
+    for text in ["PANELS", "Files", "Changes", "What your agents changed"] {
+        assert!(tree.contains(text), "missing {text:?}: {tree}");
+    }
+    assert!(element(&tree, "st-panel-files").contains("justify_end"), "{tree}");
+    assert!(element(&tree, "st-panel-changes").contains("justify_end"), "{tree}");
+    // Turned off here: the same shared key the welcome and the tab bar read.
+    let tree = describe(cx, &staged, "frame/settings", true, p, updates("current", "current"), Some("this.togglePanel('changes');")).unwrap();
+    assert!(element(&tree, "st-panel-files").contains("justify_end"), "{tree}");
+    assert!(!element(&tree, "st-panel-changes").contains("justify_end"), "{tree}");
+}
+
 #[gpui::test]
 fn animated_images_advance_with_explicit_and_implicit_ids(cx: &mut TestAppContext) {
     use gpui::{IntoElement as _, http_client::{AsyncBody, FakeHttpClient, Response}};

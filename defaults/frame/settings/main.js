@@ -814,7 +814,78 @@ export default class Settings extends View {
       .child(this.heading(t, "herdr-core"))
       .child(this.row(t, `herdr-core ${c.version ?? ""}`, core[0], core[1] ?? div()))
       .children(this.sits(t, c.build))
-      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Herdr looks for both every hour and tells you in the corner. herdr-core runs your terminals, so they keep running through its updates."));
+      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Herdr looks for both every hour and tells you in the corner. herdr-core runs your terminals, so they keep running through its updates."))
+      .children(this.fork(t, u));
+  }
+
+  // This fork's own notices (src/fork_update.rs): a newer fork release, and
+  // upstream commits it isn't based on yet. The toggles are for the corner;
+  // "Check for updates" checks both now, whichever are on.
+  fork(t, u) {
+    const f = u.fork;
+    if (!f) return [];
+    const DEFAULTS = { release: true, upstream: false };
+    const on = { ...DEFAULTS, ...(this.person.fork_updates ?? {}) };
+    const flip = (key) => (_e, cx) =>
+      this.change((p) => {
+        const next = { ...DEFAULTS, ...(p.fork_updates ?? {}), [key]: !on[key] };
+        if (next.release === DEFAULTS.release && next.upstream === DEFAULTS.upstream) delete p.fork_updates;
+        else p.fork_updates = next;
+      }, cx);
+    const link = (id, label, url) => this.button(t, id, label, (_e, cx) => cx.open_url(url));
+    const at = (secs) => {
+      const d = new Date(secs * 1000);
+      return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    };
+    const r = f.release;
+    const release = !r
+      ? null
+      : r.newer === true
+        ? `${r.tag} is out. To update, run the install line again.`
+        : r.newer === false
+          ? `Up to date: ${r.tag} is the latest release.`
+          : r.note ?? `The latest release is ${r.tag}.`;
+    const up = f.upstream;
+    const commits = (n) => `${n} new commit${n === 1 ? "" : "s"}`;
+    const behind = (name, b) => (!b ? null : b.commits ? `${name}: ${commits(b.commits)} since this fork's base.` : `${name}: nothing new since this fork's base.`);
+    const upstream = !up ? null : [behind("Herdr", up.app), behind("herdr-core", up.core)].filter(Boolean).join(" ") || up.note || "";
+    const upstreamUrl = up?.app?.commits ? up.app.url : up?.core?.commits ? up.core.url : null;
+    const result = f.checking ? "Checking…" : f.error ? f.error : f.checked ? `Checked at ${at(f.checked)}.` : "Not checked yet.";
+    const check = f.checking
+      ? div().px(12).py(5).text_size(13).text_color(t.dim).child("Checking…")
+      : this.button(t, "st-fork-check", "Check for updates", (_e, cx) => {
+          run("app.check_updates");
+          cx.notify();
+        });
+    const install = h_flex()
+      .w_full()
+      .gap(10)
+      .py(10)
+      .items_center()
+      .border_b(1)
+      .border_color(t.border)
+      .child(div().id("st-fork-install").flex_1().min_w(0).px(10).py(6).rounded(7).border_1().border_color(t.border).bg(t.background).font_family(DEFAULT_FONT).text_size(12).line_height("17px").text_color(t.foreground).child(f.install))
+      .child(
+        this.button(t, "st-fork-copy", this.forkCopied ? "Copied" : "Copy", (_e, cx) => {
+          cx.write_to_clipboard(f.install);
+          this.forkCopied = true;
+          cx.notify();
+        }),
+      );
+    return [
+      div().h(18),
+      this.heading(t, "This fork"),
+      this.row(t, `From ${f.repo}`, "Where this fork comes from: its code and its releases.", link("st-fork-repo", "Open", f.repo_url)),
+      ...(release === null ? [] : [this.row(t, "Latest release", release, r.url ? link("st-fork-release", "See release", r.url) : div())]),
+      ...(r?.newer === true ? [install] : []),
+      ...(upstream === null ? [] : [this.row(t, "Upstream since this fork's base", upstream, upstreamUrl ? link("st-fork-commits", "See commits", upstreamUrl) : div())]),
+      this.row(t, "Check for updates", result, check),
+      div().h(18),
+      this.heading(t, "Tell me in the corner"),
+      this.row(t, "New fork release", "When a newer release of this fork is out.", this.toggle(t, "st-fork-notice-release", on.release, flip("release"))),
+      this.row(t, "Fork behind upstream", "When upstream Herdr or herdr-core has commits this fork isn't based on yet. Mostly for whoever keeps the fork.", this.toggle(t, "st-fork-notice-upstream", on.upstream, flip("upstream"))),
+      div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("This fork never updates itself: run the install line again to update. While a notice is on, Herdr asks GitHub about once an hour."),
+    ];
   }
 
 
