@@ -80,18 +80,69 @@ pub fn ready() -> Option<String> {
     READY.lock().unwrap().clone()
 }
 
+/// Where a build sits against upstream, from git when it was built (build.rs
+/// for the app, `server.status` for the core): the upstream commit it's
+/// based on and the fork on top. Every field may be missing: an older or
+/// upstream core sends none.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Build {
+    /// This build's commit (short).
+    pub sha: Option<String>,
+    /// The fork's name (its branch); none for upstream itself.
+    pub fork: Option<String>,
+    /// Commits on top of upstream.
+    pub ahead: Option<u64>,
+    /// The release tag on this commit (`geocine-20261106-2310`).
+    pub tag: Option<String>,
+    /// The version and commit of the upstream it's based on (where it left upstream).
+    pub upstream_version: Option<String>,
+    pub upstream_sha: Option<String>,
+    /// Commits upstream had after that, when it was built.
+    pub behind: Option<u64>,
+}
+
+impl Build {
+    /// This app's, or none for a build without git.
+    pub fn app() -> Option<Build> {
+        let text = |v: Option<&str>| v.filter(|v| !v.is_empty()).map(str::to_owned);
+        let count = |v: Option<&str>| v.and_then(|v| v.parse().ok());
+        Build {
+            sha: text(option_env!("HERDR_BUILD_SHA")),
+            fork: text(option_env!("HERDR_BUILD_FORK")),
+            ahead: count(option_env!("HERDR_BUILD_AHEAD")),
+            tag: text(option_env!("HERDR_BUILD_TAG")),
+            upstream_version: text(option_env!("HERDR_BUILD_UPSTREAM_VERSION")),
+            upstream_sha: text(option_env!("HERDR_BUILD_UPSTREAM_SHA")),
+            behind: count(option_env!("HERDR_BUILD_BEHIND")),
+        }
+        .known()
+    }
+
+    /// What a core's `server.status` says; none when it says nothing.
+    pub fn of_core(status: &serde_json::Value) -> Option<Build> {
+        status.get("build").and_then(|b| serde_json::from_value::<Build>(b.clone()).ok()).and_then(Build::known)
+    }
+
+    fn known(self) -> Option<Build> {
+        (self != Build::default()).then_some(self)
+    }
+}
+
 /// The core the app runs, from its `server.status`, and a newer release waiting.
 #[derive(Clone, Default, serde::Serialize)]
 pub struct CoreInfo {
     pub version: Option<String>,
     /// A package manager that owns it (homebrew, nix, mise): never updated by the app.
     pub managed: Option<String>,
+    /// Where it sits against upstream; none from a core that doesn't say.
+    pub build: Option<Build>,
     pub ready: Option<String>,
     pub updating: bool,
     pub error: Option<String>,
 }
 
-static CORE: Mutex<CoreInfo> = Mutex::new(CoreInfo { version: None, managed: None, ready: None, updating: false, error: None });
+static CORE: Mutex<CoreInfo> = Mutex::new(CoreInfo { version: None, managed: None, build: None, ready: None, updating: false, error: None });
 /// When the last check succeeded (unix seconds); a failed check clears it.
 static CHECKED: Mutex<Option<u64>> = Mutex::new(None);
 /// "Check now" wakes the checker early.
@@ -105,7 +156,7 @@ pub fn core() -> CoreInfo {
 }
 
 /// What the connected core says about itself (on connect and every reconnect).
-pub fn set_core(version: Option<String>, managed: Option<String>) {
+pub fn set_core(version: Option<String>, managed: Option<String>, build: Option<Build>) {
     let mut c = CORE.lock().unwrap();
     if let (Some(have), Some(ready)) = (&version, &c.ready)
         && !newer(ready, have)
@@ -117,6 +168,7 @@ pub fn set_core(version: Option<String>, managed: Option<String>) {
     if c.managed.is_some() {
         c.error = None;
     }
+    c.build = build;
 }
 
 fn checks_app() -> Option<PathBuf> {
@@ -131,7 +183,7 @@ fn checks_core() -> bool {
 /// For the settings screen: both programs, what's waiting, when we last looked.
 pub fn status() -> serde_json::Value {
     serde_json::json!({
-        "app": { "version": env!("CARGO_PKG_VERSION"), "ready": ready(), "updates": checks_app().is_some() },
+        "app": { "version": env!("CARGO_PKG_VERSION"), "build": Build::app(), "ready": ready(), "updates": checks_app().is_some() },
         "notes": crate::update_notes::notes(ready().as_deref()),
         "core": core(),
         "checked": *CHECKED.lock().unwrap(),
@@ -895,6 +947,19 @@ mod tests {
         assert_eq!(after_update_target("0.1.4", Some(&latest), 1, "0.1.11"), None);
         assert_eq!(after_update_target("0.1.5", Some(&latest), 1, "0.1.11"), Some("0.1.13"));
         assert_eq!(after_update_target("0.1.5", None, 1, "0.1.11"), Some("0.1.11"));
+    }
+
+    #[test]
+    fn a_core_says_where_it_sits_or_nothing() {
+        let status = serde_json::json!({"version": "0.1.18", "build": {"sha": "dba5a5d", "fork": "geocine", "ahead": 7, "tag": null, "upstream_version": "0.1.18", "upstream_sha": "c6b316f", "behind": 0, "later": "ignored"}});
+        let build = Build::of_core(&status).unwrap();
+        assert_eq!((build.sha.as_deref(), build.fork.as_deref(), build.ahead, build.tag), (Some("dba5a5d"), Some("geocine"), Some(7), None));
+        assert_eq!((build.upstream_version.as_deref(), build.upstream_sha.as_deref(), build.behind), (Some("0.1.18"), Some("c6b316f"), Some(0)));
+        // An older or upstream core: no build, a null one, or one with nothing in it.
+        for status in [serde_json::json!({"version": "0.1.17"}), serde_json::json!({"build": null}), serde_json::json!({"build": {}}), serde_json::json!({"build": "odd"})] {
+            assert_eq!(Build::of_core(&status), None, "{status}");
+        }
+        assert_eq!(Build::of_core(&serde_json::json!({"build": {"sha": "abc1234"}})).unwrap().sha.as_deref(), Some("abc1234"));
     }
 
     #[test]

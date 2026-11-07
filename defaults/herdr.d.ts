@@ -310,16 +310,31 @@ export function themes(): { name: string; light: boolean; colors: Record<string,
 /** The font families on this machine, by name. */
 export function fonts(): string[];
 
+/** Where a build sits against upstream. `sha`: its commit; `fork`: the fork's name (its branch),
+ *  null for upstream itself; `ahead`: commits on top of upstream; `tag`: the release tag on its
+ *  commit; `upstream_version`, `upstream_sha`: the upstream commit it's based on; `behind`:
+ *  commits upstream had after that, when it was built. */
+export type UpdateBuild = {
+  sha: string | null;
+  fork: string | null;
+  ahead: number | null;
+  tag: string | null;
+  upstream_version: string | null;
+  upstream_sha: string | null;
+  behind: number | null;
+};
+
 /** Herdr's and herdr-core's versions and what's waiting. `app.updates`: false for a build from
  *  source (it never updates). `core.managed`: the package manager that owns the core (homebrew,
  *  nix, mise), which the app never updates. `checked`: unix seconds of the last successful
  *  check; null before success or after a failed check.
  *  `checks`: anything is checked at all (not in a build from source); `checking`: looking now
- *  (`app.check_updates` starts a look). */
+ *  (`app.check_updates` starts a look). `build`: where each sits against upstream, from git when
+ *  it was built (null without git, or from a core that doesn't say; any field may be null). */
 export function updates(): {
-  app: { version: string; ready: string | null; updates: boolean };
+  app: { version: string; build: UpdateBuild | null; ready: string | null; updates: boolean };
   notes: { version: string; date: string; items: { headline: string; detail: string; fixed: boolean; media: { path: string; width: number; height: number }[] }[]; spotlight: boolean }[];
-  core: { version: string | null; managed: string | null; ready: string | null; updating: boolean; error: string | null };
+  core: { version: string | null; managed: string | null; build: UpdateBuild | null; ready: string | null; updating: boolean; error: string | null };
   checked: number | null;
   checks: boolean;
   checking: boolean;
