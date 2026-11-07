@@ -1033,7 +1033,8 @@ export default class Settings extends View {
         cx.stop_propagation();
         cx.notify();
       })
-      .child(nav.h_full().child(div().flex_1()).child(this.button(t, "st-feedback", "Send feedback", () => { closeOverlay(props()?.overlay); run("app.feedback"); })))
+      // This fork sends no feedback, so it offers no Send feedback button.
+      .child(nav.h_full())
       .child(
         // A bar that always shows: the pages are taller than the dialog and
         // people should see that they scroll.
