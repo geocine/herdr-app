@@ -63,7 +63,7 @@ Done. It installs the app **and** the core.
 
 ### Privacy
 - **No usage data.** Nothing is collected or sent.
-- **No feedback sending.** The button is there, but nothing is sent.
+- **No feedback sending.** Nothing is sent.
 
 ## Make a release
 
