@@ -820,7 +820,8 @@ What's about the user, never a look:
   User-Agent, nothing about the person; answers kept in `.fork-updates.json`).
   Check for updates in Settings → Updates checks both now and shows what it
   found, or why it couldn't (offline, GitHub's hourly limit). Closing a notice
-  keeps it closed until a newer release, or a new upstream base. Results are in
+  keeps it closed until a newer release, or until upstream has more commits
+  (or a new base). Results are in
   `updates().fork`.
 - `pane_scrollbars`: `false` hides the scroll position thumb at a terminal
   pane's right edge (default `true`). It shows only when the pane has
