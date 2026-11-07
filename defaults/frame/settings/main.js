@@ -2,7 +2,7 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, InputState, Input, Popup } from "gpui-base";
-import { hc, run, theme, themes, fonts, updates, telemetry, settings, layouts, shared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window } from "herdr";
+import { hc, run, theme, themes, fonts, updates, telemetry, settings, layouts, layout, shared, setShared, appHome, readTextFile, writeTextFile, playSound, props, closeOverlay, notify, window } from "herdr";
 
 const I = (name) => `frame/settings/${name}.svg`;
 
@@ -21,6 +21,22 @@ const APPEARANCES = [
   ["light", "Light"],
   ["dark", "Dark"],
 ];
+
+// The panels the main layout offers (its "panel-body" stack), as the welcome shows them.
+const PANELS = [
+  { id: "files", title: "Files", about: "The folder you're in as a tree. Open a file to read it, highlighted." },
+  { id: "changes", title: "Changes", about: "What your agents changed: every file with its diff, and a commit box." },
+];
+
+function find(node, id) {
+  if (!node) return null;
+  if (node.id === id) return node;
+  for (const c of node.children ?? []) {
+    const f = find(c, id);
+    if (f) return f;
+  }
+  return null;
+}
 
 // What the app uses when settings.json names no font (settings.rs).
 const DEFAULT_FONT = "JetBrains Mono";
@@ -489,6 +505,26 @@ export default class Settings extends View {
       );
   }
 
+  // The panels picked (shared "workspace.panels", as the welcome sets it):
+  // the tab bar shows a button for each.
+  panels() {
+    return shared("workspace.panels") ?? PANELS.map((p) => p.id);
+  }
+
+  togglePanel(id) {
+    const on = this.panels().includes(id);
+    const next = on ? this.panels().filter((x) => x !== id) : [...this.panels(), id];
+    setShared("workspace.panels", next);
+    const L = layout();
+    if (!find(L, "panel")) return;
+    if (on) {
+      if (find(L, "panel-body")?.active === id || next.length === 0) run("layout.hide", { id: "panel" });
+    } else {
+      run("layout.select", { stack: "panel-body", child: id });
+      run("layout.show", { id: "panel" });
+    }
+  }
+
   look(t, cx) {
     const s = settings();
     const p = this.person;
@@ -549,7 +585,14 @@ export default class Settings extends View {
           (_e, cx) => this.change((q) => (q[key] = Math.max(min, Math.min(max, Math.round(((q[key] ?? s[key]) - 0.1) * 10) / 10))), cx),
           (_e, cx) => this.change((q) => (q[key] = Math.max(min, Math.min(max, Math.round(((q[key] ?? s[key]) + 0.1) * 10) / 10))), cx)),
       )))
-      .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT));
+      .child(fontRow("ui_font", null, "Interface font", s.ui_font_family, DEFAULT_UI_FONT))
+      .child(div().h(18))
+      .child(this.heading(t, "Panels"))
+      .children(PANELS.map((p) => this.row(t, p.title, p.about, this.toggle(t, `st-panel-${p.id}`, this.panels().includes(p.id), (_e, cx) => {
+        this.togglePanel(p.id);
+        cx.notify();
+      }))))
+      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("The tab bar shows a button for each panel that's on."));
   }
 
   keyboard(t) {
