@@ -189,10 +189,12 @@ pub fn status() -> serde_json::Value {
         "checked": *CHECKED.lock().unwrap(),
         "checks": RUNNING.load(Ordering::Relaxed),
         "checking": CHECKING.load(Ordering::Relaxed),
+        "fork": crate::fork_update::status(),
     })
 }
 
 pub fn check_now() {
+    crate::fork_update::check_now();
     if RUNNING.load(Ordering::Relaxed) {
         CHECKING.store(true, Ordering::Relaxed);
     }
@@ -208,6 +210,8 @@ fn sleep(d: Duration) {
 
 /// Starts checking in the background: the app if it's an installed release, the core too.
 pub fn start() {
+    // This fork's own notices (fork_update.rs), from source builds too.
+    crate::fork_update::start();
     let app = checks_app();
     let core = checks_core();
     if app.is_none() && !core {
