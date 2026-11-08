@@ -142,15 +142,20 @@ fn launch_failure(record: &Value, output: &str) -> Option<String> {
 }
 
 /// The shipped layouts (defaults/layouts): `main` is Herdr's window (spaces
-/// sidebar, tab bar).
+/// sidebar, tab bar); `geocine` is this fork's default (main plus the geocine
+/// mod's Files, Changes and Graph panels).
 const LAYOUTS: &[(&str, &str)] = &[
     ("main", include_str!("../defaults/layouts/main.json")),
+    ("geocine", include_str!("../defaults/layouts/geocine.json")),
     ("terminals", include_str!("../defaults/layouts/terminals.json")),
     ("win98", include_str!("../defaults/layouts/win98.json")),
 ];
 
 /// Pictures shipped layouts name as their `preview`, written beside them.
-const LAYOUT_PREVIEWS: &[(&str, &str)] = &[("win98.svg", include_str!("../defaults/layouts/win98.svg"))];
+const LAYOUT_PREVIEWS: &[(&str, &str)] = &[
+    ("win98.svg", include_str!("../defaults/layouts/win98.svg")),
+    ("geocine.svg", include_str!("../defaults/layouts/geocine.svg")),
+];
 
 pub fn shipped_layouts() -> Vec<&'static str> {
     LAYOUTS.iter().map(|(n, _)| *n).collect()
@@ -169,7 +174,21 @@ fn layout_path(name: &str) -> PathBuf {
     file(&format!("layouts/{name}.json"))
 }
 
-/// Layout names on disk, in order: main first, then the rest alphabetically.
+/// This fork's default layout: a first start opens it, and an install that was
+/// on Herdr's `main` before it shipped moves to it once (see `startup_layout`).
+pub(crate) const DEFAULT_LAYOUT: &str = "geocine";
+
+/// The layout to open at start. `shown` is the layout saved last, `moved`
+/// whether the fork already made its one move to the default.
+fn startup_layout(shown: Option<&str>, moved: bool) -> (String, bool) {
+    match shown {
+        None => (DEFAULT_LAYOUT.into(), true),
+        Some("main") if !moved => (DEFAULT_LAYOUT.into(), true),
+        Some(name) => (name.into(), false),
+    }
+}
+
+/// Layout names on disk, in order: the default and main first, then the rest alphabetically.
 /// A layout whose mods are gone (Zen after the update) isn't offered;
 /// `layout.switch {name}` still reaches it.
 pub(crate) fn layout_names() -> Vec<String> {
@@ -180,7 +199,7 @@ pub(crate) fn layout_names() -> Vec<String> {
         .filter_map(|e| e.file_name().to_str()?.strip_suffix(".json").map(str::to_owned))
         .filter(|n| missing_mods(n).is_empty())
         .collect();
-    names.sort_by_key(|n| (n != "main", n.clone()));
+    names.sort_by_key(|n| (n != DEFAULT_LAYOUT, n != "main", n.clone()));
     names
 }
 
@@ -595,7 +614,14 @@ impl AppWindow {
         crate::programs::install_icons();
         w.reload_config(window, cx);
         install_layouts();
-        let name = mods::shared("layout").and_then(|v| v.as_str().map(str::to_owned)).filter(|n| layout_path(n).exists());
+        let saved = mods::shared("layout").and_then(|v| v.as_str().map(str::to_owned)).filter(|n| layout_path(n).exists());
+        let moved = mods::shared("geocine.default").is_some();
+        let (start, moving) = startup_layout(saved.as_deref(), moved);
+        if !moved {
+            mods::set_shared("geocine.default".into(), json!(true));
+        }
+        let name = (layout_path(&start).exists()).then_some(start);
+
         // A layout whose mods are gone (Zen, T4, ADE after the update took
         // theirs) starts on Herdr's instead of a wall of "did not load".
         let gone = name.as_deref().map(missing_mods).unwrap_or_default();
@@ -604,6 +630,11 @@ impl AppWindow {
         crate::macos::refresh_menus(cx);
         w.apply_look(window, cx);
         w.show_layout_notes(window, cx);
+        // Moved off Herdr's main once: say how to go back.
+        if moving && saved.is_some() && name.is_some() && gone.is_empty() {
+            let note = json!({ "title": "This fork opens the Geocine layout", "body": "Files, Changes and a Git graph beside your terminals. Ctrl+Shift+L switches layouts, Herdr's own is still there.", "level": "info", "timeout": 12000 });
+            w.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": note }), window, cx);
+        }
         if let (Some(n), false) = (&name, gone.is_empty()) {
             let note = json!({ "title": format!("{n} needs mods that aren't here"), "body": format!("Showing Herdr instead. Missing: {}. Your {n} layout file is still there.", gone.join(", ")), "level": "info", "timeout": 12000 });
             w.open_overlay(mods::new_overlay_id(), json!({ "kind": "toast", "notification": note }), window, cx);
@@ -5327,6 +5358,34 @@ mod tests {
         core.error = Some("checksum mismatch".into());
         super::reconcile_core_update_error(&mut dismissed, &core);
         assert!(dismissed.is_none());
+    }
+
+    #[test]
+    fn the_fork_starts_on_geocine_and_moves_off_main_only_once() {
+        let s = |n: &str, m: bool| (n.to_owned(), m);
+        // A first start, and an install still on Herdr's main, open the default.
+        assert_eq!(super::startup_layout(None, false), s("geocine", true));
+        assert_eq!(super::startup_layout(Some("main"), false), s("geocine", true));
+        // Once moved, picking main again sticks; other picks are never moved.
+        assert_eq!(super::startup_layout(Some("main"), true), s("main", false));
+        assert_eq!(super::startup_layout(Some("win98"), false), s("win98", false));
+        assert_eq!(super::startup_layout(None, true), s("geocine", true));
+    }
+
+    #[test]
+    fn the_geocine_layout_ships_and_names_only_shipped_mods() {
+        assert!(super::shipped_layouts().contains(&"geocine"));
+        let layout: serde_json::Value = serde_json::from_str(super::shipped_layout("geocine")).unwrap();
+        let mut mods = Vec::new();
+        fn walk(n: &serde_json::Value, out: &mut Vec<String>) {
+            if let Some(m) = n.pointer("/content/mod").and_then(|m| m.as_str()) { out.push(m.into()); }
+            for c in n["children"].as_array().into_iter().flatten() { walk(c, out); }
+        }
+        walk(&layout, &mut mods);
+        assert!(mods.contains(&"geocine".to_owned()));
+        for m in mods {
+            assert!(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("defaults/mods").join(&m).join("main.js").is_file(), "{m} isn't shipped");
+        }
     }
 
     #[test]
