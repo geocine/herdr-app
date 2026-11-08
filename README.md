@@ -52,7 +52,7 @@ Done. It installs the app **and** the core.
     Click a commit to see its diff.
 - **Full mode**: the expand button opens any panel almost as big as the window.
 - Herdr's own look, light and dark. Want green? Pick **geocine dark** in Settings → Look.
-- `Ctrl+B` hides the sidebar, like VS Code.
+- `Ctrl+B` folds the sidebar to a slim rail and back, like VS Code.
 - Herdr's own layout is still there: `Ctrl+Shift+L` switches.
 
 ### Windows + Git Bash
