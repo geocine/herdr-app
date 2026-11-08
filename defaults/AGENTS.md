@@ -177,10 +177,17 @@ agents list on the left, `workspace-chrome`; tabs as pills with a + menu
 that starts a terminal or any installed agent, `new-menu`; panes as cards
 with a header; Files and Changes panels on the right, `files` and
 `changes`, opened from the tab bar and remembered per space (which ones:
-shared `"workspace.panels"`, set by the welcome); a status bar,
+shared `"workspace.panels"`, set in Settings → Look); a status bar,
 `workspace-status`), and as examples `terminals` ("Terminals": tabs in
 the title bar, panes as cards, a space picker) and `win98`
-("Herdr 98": a whole desktop in one mod, `win98`). Add a layout by
+("Herdr 98": a whole desktop in one mod, `win98`). This fork also ships
+`geocine` and opens it by default (a first start, and once for an install
+that was on `main`; `shared("geocine.default")` records that): main's
+window in the `geocine-dark` / `geocine-light` themes, with the `geocine`
+mod drawing the tab bar and the side panel's Files, Changes and Graph
+(`{ "mod": "geocine", "props": { "view": "tabs" | "files" | "changes" | "graph" } }`;
+`view: "full"` is full mode, an overlay with list and detail side by side).
+`mods/geocine/DESIGN.md` describes its parts. Add a layout by
 writing a new file. The Files panel supports Windows folder paths with spaces,
 parentheses and apostrophes, and preserves Unicode file and folder names
 (including Chinese). Directory links expand as folders; their contents load

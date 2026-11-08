@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 200">
+  <!-- window -->
+  <rect width="320" height="200" fill="#0b0d0a"/>
+  <!-- sidebar -->
+  <rect width="64" height="200" fill="#0e110c"/>
+  <rect x="64" width="1" height="200" fill="#232a1e"/>
+  <rect x="8" y="9" width="9" height="9" rx="2" fill="#89f50b"/>
+  <rect x="21" y="11" width="24" height="5" rx="2" fill="#d8e0d0"/>
+  <g fill="#6f7a66">
+    <rect x="8" y="30" width="22" height="3" rx="1.5"/>
+    <rect x="8" y="104" width="22" height="3" rx="1.5"/>
+  </g>
+  <rect x="5" y="38" width="54" height="13" rx="3" fill="#1d2219"/>
+  <rect x="9" y="42" width="5" height="5" rx="1.5" fill="#89f50b"/>
+  <rect x="18" y="43" width="30" height="3" rx="1.5" fill="#d8e0d0"/>
+  <g fill="#9aa590">
+    <rect x="9" y="58" width="5" height="5" rx="1.5" fill="#5fb3ff"/><rect x="18" y="59" width="26" height="3" rx="1.5"/>
+    <rect x="9" y="70" width="5" height="5" rx="1.5" fill="#f5c542"/><rect x="18" y="71" width="32" height="3" rx="1.5"/>
+    <rect x="9" y="114" width="5" height="5" rx="2.5" fill="#89f50b"/><rect x="18" y="115" width="28" height="3" rx="1.5"/>
+    <rect x="9" y="126" width="5" height="5" rx="2.5" fill="#5fb3ff"/><rect x="18" y="127" width="22" height="3" rx="1.5"/>
+  </g>
+  <!-- tab bar -->
+  <rect x="65" width="255" height="18" fill="#0e110c"/>
+  <rect x="65" y="18" width="255" height="1" fill="#232a1e"/>
+  <rect x="70" y="4" width="36" height="11" rx="3" fill="#1d2219" stroke="#232a1e" stroke-width="0.6"/>
+  <rect x="75" y="8" width="26" height="3" rx="1.5" fill="#d8e0d0"/>
+  <rect x="110" y="8" width="22" height="3" rx="1.5" fill="#6f7a66"/>
+  <rect x="200" y="4" width="26" height="11" rx="3" fill="#89f50b" fill-opacity="0.18"/>
+  <rect x="204" y="8" width="18" height="3" rx="1.5" fill="#d8e0d0"/>
+  <g fill="#9aa590"><rect x="231" y="8" width="22" height="3" rx="1.5"/><rect x="258" y="8" width="18" height="3" rx="1.5"/></g>
+  <!-- terminal pane -->
+  <rect x="70" y="23" width="140" height="161" rx="5" fill="#11140f" stroke="#89f50b" stroke-width="0.8"/>
+  <rect x="70.5" y="23.5" width="139" height="11" rx="4.5" fill="#161a13"/>
+  <rect x="76" y="27" width="40" height="3" rx="1.5" fill="#9aa590"/>
+  <g fill="#89f50b"><rect x="76" y="42" width="8" height="3" rx="1"/><rect x="76" y="66" width="8" height="3" rx="1"/></g>
+  <g fill="#d8e0d0"><rect x="88" y="42" width="60" height="3" rx="1"/><rect x="88" y="66" width="44" height="3" rx="1"/></g>
+  <g fill="#6f7a66"><rect x="76" y="50" width="96" height="3" rx="1"/><rect x="76" y="57" width="72" height="3" rx="1"/><rect x="76" y="74" width="84" height="3" rx="1"/></g>
+  <rect x="76" y="82" width="4" height="6" fill="#89f50b"/>
+  <!-- side panel: graph -->
+  <rect x="215" y="23" width="100" height="161" rx="5" fill="#11140f" stroke="#232a1e" stroke-width="0.8"/>
+  <rect x="215.5" y="23.5" width="99" height="11" rx="4.5" fill="#0e110c"/>
+  <rect x="221" y="27" width="28" height="3" rx="1.5" fill="#d8e0d0"/>
+  <g fill="none" stroke-width="1.6" stroke-linecap="round">
+    <path d="M226 44 V172" stroke="#89f50b"/>
+    <path d="M226 60 C226 68 236 66 236 74 V118 C236 126 226 124 226 132" stroke="#5fb3ff"/>
+    <path d="M236 92 C236 100 246 98 246 106 V150" stroke="#c792ea"/>
+  </g>
+  <g fill="#89f50b"><circle cx="226" cy="44" r="3"/><circle cx="226" cy="100" r="2.4"/><circle cx="226" cy="132" r="3"/><circle cx="226" cy="160" r="2.4"/></g>
+  <g fill="#5fb3ff"><circle cx="236" cy="78" r="2.4"/><circle cx="236" cy="112" r="2.4"/></g>
+  <circle cx="246" cy="128" r="2.4" fill="#c792ea"/>
+  <g fill="#9aa590">
+    <rect x="254" y="42" width="44" height="3" rx="1.5"/><rect x="254" y="58" width="34" height="3" rx="1.5"/>
+    <rect x="254" y="76" width="50" height="3" rx="1.5"/><rect x="254" y="98" width="40" height="3" rx="1.5"/>
+    <rect x="254" y="110" width="46" height="3" rx="1.5"/><rect x="254" y="126" width="30" height="3" rx="1.5"/>
+    <rect x="254" y="130" width="0" height="0"/><rect x="254" y="158" width="38" height="3" rx="1.5"/>
+  </g>
+  <rect x="254" y="38" width="20" height="9" rx="2" fill="#89f50b" fill-opacity="0.25"/>
+  <!-- status bar -->
+  <rect x="65" y="188" width="255" height="12" fill="#0e110c"/>
+  <rect x="65" y="188" width="255" height="1" fill="#232a1e"/>
+  <rect x="72" y="192" width="30" height="3" rx="1.5" fill="#6f7a66"/>
+  <rect x="108" y="192" width="24" height="3" rx="1.5" fill="#89f50b"/>
+</svg>
