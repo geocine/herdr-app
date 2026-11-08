@@ -248,7 +248,7 @@ export default class Welcome extends View {
   forkCard(t) {
     const point = (text) => h_flex().gap(8).items_start()
       .child(svg(I("check")).size(14).mt(2).flex_none().text_color(t.accent))
-      .child(div().flex_1().text_size(13).text_color(t.foreground).child(text));
+      .child(div().flex_1().min_w(0).text_size(13).text_color(t.foreground).child(text));
     return v_flex()
       .gap(10)
       .p(16)
@@ -267,7 +267,7 @@ export default class Welcome extends View {
       .child(point("Your agents come back to the same chat: Claude Code, Codex, pi, OpenCode, Grok."))
       .child(point("Many tabs with the same agent? Each tab gets its own chat back."))
       .child(point("Works well with Git Bash. Herdr follows your folder when you cd."))
-      .child(point("The Geocine layout: Files, Changes and a Git graph beside your terminals. More on the next page."))
+      .child(point("The Geocine layout: Files, Changes and a Git graph beside your terminals."))
       .child(point("No tracking. Nothing is sent."))
       .child(div().text_size(12).text_color(t.muted).child("Source and updates: github.com/geocine/herdr-app"));
   }
@@ -372,7 +372,7 @@ export default class Welcome extends View {
       .when(id !== null && has(id), (el) => el.child(show(id)));
     return v_flex()
       .gap(14)
-      .child(this.title(t, "Your project, beside your terminals", "The Geocine layout has three panels on the right. The buttons in the tab bar open them."))
+      .child(this.title(t, "Your project, beside your terminals", "The Geocine layout has three panels on the right. The buttons in the tab bar open them, and Ctrl+B hides the sidebar for more room."))
       .child(item("files", "g-files", "Files", "Your project as a tree, with git colors. Search with /. Click a file to read it: Markdown, code, images. Ctrl+E edits it, Ctrl+S saves."))
       .child(item("changes", "g-changes", "Changes", "What changed, as diffs you can fold and mark as viewed. Stage, unstage, discard, commit."))
       .child(item("graph", "g-git-graph", "Graph", "Every branch and commit. Click a commit for its diff. Right-click to checkout, merge, rebase, tag or push."))
