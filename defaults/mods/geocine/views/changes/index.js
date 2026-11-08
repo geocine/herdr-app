@@ -26,6 +26,15 @@ const setPref = (key, value) => { try { localStorage.setItem(`changes.${key}`, J
 const message = (e) => String(e?.message ?? e).replace(/^error: /, "");
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const label = (id) => SECTIONS.find(s => s.id === id)?.label ?? id;
+// What the list shows, as VS Code's Source Control: merge conflicts, then what is staged, then
+// every other change (edited and untracked files together, by path). Git's own sections stay
+// on each entry (e.section), so stage, unstage and discard know what they act on.
+const GROUPS = [
+  { id: "conflicts", label: "Merge Changes", from: ["conflicts"] },
+  { id: "staged", label: "Staged Changes", from: ["staged"] },
+  { id: "changes", label: "Changes", from: ["unstaged", "untracked"] },
+];
+const byPath = (a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: "base" });
 
 export default class ChangesView extends View {
   init(p, cx) {
@@ -124,6 +133,7 @@ export default class ChangesView extends View {
   }
 
   entries(sectionId) { return this.data?.sections[sectionId] ?? []; }
+  groupEntries(g) { return g.from.length === 1 ? this.entries(g.from[0]) : g.from.flatMap(id => this.entries(id)).sort(byPath); }
   allEntries() { return SECTIONS.flatMap(s => this.entries(s.id)); }
   find(sel) { return sel && sel !== "all" ? this.entries(sel.section).find(e => e.path === sel.path) ?? null : null; }
   count() { return this.allEntries().length; }
@@ -200,7 +210,7 @@ export default class ChangesView extends View {
   // The rows the keyboard moves through, in order.
   flat() {
     const out = this.wide && this.count() ? ["all"] : [];
-    for (const s of SECTIONS) if (!this.folded.has(s.id)) for (const e of this.entries(s.id)) if (out.length < SHOWN) out.push({ section: s.id, path: e.path });
+    for (const g of GROUPS) if (!this.folded.has(g.id)) for (const e of this.groupEntries(g)) if (out.length < SHOWN) out.push({ section: e.section, path: e.path });
     return out;
   }
   same(a, b) { return a === b || (a && b && a !== "all" && b !== "all" && a.section === b.section && a.path === b.path); }
@@ -260,7 +270,9 @@ export default class ChangesView extends View {
     const one = list.length === 1 ? baseName(list[0].path) : null;
     this.confirm = {
       title: untracked ? (one ? `Delete ${one}?` : `Delete ${plural(list.length, "untracked file")}?`) : (one ? `Discard changes to ${one}?` : `Discard ${what ?? plural(list.length, "change")}?`),
-      detail: untracked ? "The file is not in git: it is gone for good." : staged ? "Staged and unstaged changes go back to the last commit. This can't be undone." : "Your edits go back to what is staged or committed. This can't be undone.",
+      detail: untracked ? "The file is not in git: it is gone for good." : staged ? "Staged and unstaged changes go back to the last commit. This can't be undone."
+        : list.some(e => e.section === "untracked") ? "Your edits go back to what is staged or committed, and untracked files are deleted for good. This can't be undone."
+        : "Your edits go back to what is staged or committed. This can't be undone.",
       label: untracked ? "Delete" : "Discard",
       run: (cx) => this.act("discard", (top, on, head) => discard(list, top, on, head), cx),
     };
@@ -311,22 +323,21 @@ export default class ChangesView extends View {
       .child(h_flex().flex_1().min_w(0).gap(6).items_center().overflow_hidden()
         .child(div().min_w(0).flex_shrink_1().truncate().text_color(e.status === "D" ? t.muted : t.foreground).when(e.status === "D", el => el.line_through()).child(name))
         .when(Boolean(dir), el => el.child(div().min_w(0).flex_shrink(100).truncate().text_size(SIZE.small).text_color(t.dim).child(dir))))
-      .when(hovered && !this.busy, el => el.child(h_flex().flex_none().gap(1)
+      .when((hovered || selected) && !this.busy, el => el.child(h_flex().flex_none().gap(1)
         .child(small("open", "file-text", "Open file", (cx) => { this.sel = sel; this.openFile(e.path, e.section === "staged" && e.status === "D" ? "HEAD" : null); this.syncDetail(cx); }))
         .when(e.section !== "conflicts", el => el.child(small("discard", "undo-2", e.section === "untracked" ? "Delete" : "Discard changes", (cx) => this.askDiscard([e], cx))))
         .child(e.section === "staged" ? small("unstage", "minus", "Unstage", (cx) => this.toggleStage(e, cx)) : small("stage", "plus", "Stage", (cx) => this.toggleStage(e, cx)))))
-      .when(!hovered || this.busy, el => el.child(e.binary ? div().flex_none().text_size(SIZE.small).text_color(t.dim).child("bin") : counts(t, e.adds, e.dels)))
+      .when(!(hovered || selected) || this.busy, el => el.child(e.binary ? div().flex_none().text_size(SIZE.small).text_color(t.dim).child("bin") : counts(t, e.adds, e.dels)))
       .child(badge(t, statusLetter(e.status), statusColor(t, e.status)).text_center());
   }
 
   sectionView(t, s) {
-    const list = this.entries(s.id);
+    const list = this.groupEntries(s);
     if (!list.length) return null;
     const open = !this.folded.has(s.id);
     const btn = (bid, icon, tip, fn) => iconButton(t, `changes-sec-${s.id}-${bid}`, icon, (_e, cx) => fn(cx), { size: 20, disabled: Boolean(this.busy) }).tooltip(tip);
     const actions = s.id === "staged" ? [btn("unstage", "minus", "Unstage all", (cx) => this.act("unstage", (top, on, head) => unstageAll(top, on, head), cx))]
-      : s.id === "unstaged" ? [btn("discard", "undo-2", "Discard all", (cx) => this.askDiscard(list, cx, `all ${plural(list.length, "unstaged change")}`)), btn("stage", "plus", "Stage all", (cx) => this.act("stage", (top, on) => stage(list, top, on), cx))]
-      : s.id === "untracked" ? [btn("discard", "undo-2", "Delete all", (cx) => this.askDiscard(list, cx)), btn("stage", "plus", "Stage all", (cx) => this.act("stage", (top, on) => stage(list, top, on), cx))]
+      : s.id === "changes" ? [btn("discard", "undo-2", "Discard all changes", (cx) => this.askDiscard(list, cx, `all ${plural(list.length, "change")}`)), btn("stage", "plus", "Stage all changes", (cx) => this.act("stage", (top, on) => stage(list, top, on), cx))]
       : [btn("stage", "plus", "Mark all resolved", (cx) => this.act("stage", (top, on) => stage(list, top, on), cx))];
     const head = section(t, `changes-sec-${s.id}`, s.label, {
       count: list.length, open, actions,
@@ -394,7 +405,7 @@ export default class ChangesView extends View {
       .child(this.commitBox(t))
       .child(v_flex().id("changes-list").flex_1().min_h(0).pb(8).overflow_y_scrollbar()
         .when(this.wide, el => el.child(this.allRow(t).mt(4)))
-        .map(el => { this.budget = SHOWN; return el.children(SECTIONS.map(s => this.sectionView(t, s)).filter(Boolean)); })
+        .map(el => { this.budget = SHOWN; return el.children(GROUPS.map(g => this.sectionView(t, g)).filter(Boolean)); })
         .when(Boolean(this.data.cut), el => el.child(div().px(SIZE.pad).py(4).text_size(SIZE.small).text_color(t.dim).child(`Showing the first ${this.data.total} changes`))))
       .when(Boolean(this.menu), el => el.child(this.menuView(t)));
   }
