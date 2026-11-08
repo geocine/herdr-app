@@ -6,7 +6,8 @@
 #   SHA256SUMS
 #
 #   scripts/fork-release.ps1                 build and pack
-#   scripts/fork-release.ps1 -Publish        then a GitHub release on geocine/herdr-app (needs gh)
+#   scripts/fork-release.ps1 -Publish        then a GitHub release on geocine/herdr-app (needs gh);
+#                                            the same day's earlier release and its tag are removed
 #   scripts/fork-release.ps1 -Core <dir>     the herdr-core checkout (default: ..\herdr-core)
 #   scripts/fork-release.ps1 -CoreExe <exe>  pack this herdr-core.exe instead of building one
 #                                            (one antivirus already lets run: a fresh unsigned
@@ -106,6 +107,15 @@ try {
         Run @("gh", "release", "create", $tag, "--repo", $Repo, "--target", "geocine", "--title", "Herdr geocine $tag", "--notes-file", $notesFile,
             "$out\herdr-app-windows-x86_64.tar.gz", "$out\herdr-core-windows-x86_64.zip", "$out\SHA256SUMS")
         Write-Host "Published $tag on $Repo."
+        # One release a day: the day's earlier ones go, with their tags (after the new one is up,
+        # so the installer always has a latest).
+        $day = $tag.Substring(0, "geocine-yyyyMMdd".Length)
+        $older = gh release list --repo $Repo --limit 100 --json tagName -q ".[].tagName" | Where-Object { $_.StartsWith("$day-") -and $_ -ne $tag }
+        foreach ($old in $older) {
+            Run @("gh", "release", "delete", $old, "--repo", $Repo, "--yes", "--cleanup-tag")
+            git -C $app tag -d $old 2>$null | Out-Null
+            Write-Host "Removed $old (one release a day)."
+        }
     }
 } finally {
     if ($null -ne $givenTag) { $env:HERDR_BUILD_TAG = $givenTag } else { Remove-Item Env:HERDR_BUILD_TAG -ErrorAction SilentlyContinue }
