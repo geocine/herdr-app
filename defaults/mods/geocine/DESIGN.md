@@ -104,7 +104,8 @@ Zoom: 70–200%, per view in localStorage.
 Blame (`lib/preview/blame.js`): `git blame --porcelain` in the background once the file shows,
 again only when its text or git status changes; never before the text is on screen. The cursor
 line gets a GitLens-like note (`EditorState.set_line_hints`); full mode adds a blame column (the
-history button toggles it), for files up to 1000 lines. Over 20000 lines: no blame.
+history button hides or shows both), for files up to 1000 lines. Over 20000 lines: no blame. In
+full mode a short file fills the view: the gutters run to the bottom.
 
 ### Diff — `lib/diff/index.js`
 

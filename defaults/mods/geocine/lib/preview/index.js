@@ -135,7 +135,7 @@ export default class Preview extends View {
     this.textZoom = LEVELS.includes(z) ? z : 1;
     this.codeFont = Math.round(FONT * this.textZoom);
     this.wrap = localStorage.getItem(WRAP_KEY) === "1";
-    this.blameCol = localStorage.getItem(BLAME_KEY) !== "0";   // the blame column in full mode
+    this.blameCol = localStorage.getItem(BLAME_KEY) !== "0";   // blame shown: the line notes, and full mode's column
     this.blame = null;    // { rows, commits } of the file on disk (blame.js), null until known
     this.blameKey = null; // what this.blame was read for: { doc, st }
     this.blameHints = null;
@@ -432,7 +432,7 @@ export default class Preview extends View {
     const state = EditorState.new({ readonly: true, font_family: settings().font_family, font_size: this.codeFont, syntax: syntax(theme()),
       ...(language ? { language } : {}), soft_wrap: this.wrapOn(), value: this.doc?.text ?? "" });
     this.findInCode(state);
-    if (this.blameHints && this.doc?.kind === "text") state.set_line_hints(this.blameHints);
+    if (this.hintsNow() && this.doc?.kind === "text") state.set_line_hints(this.hintsNow());
     return state;
   }
 
@@ -573,8 +573,11 @@ export default class Preview extends View {
   }
 
   /** The cursor line's blame note in the Editors (an edited, unsaved text has none: its rows moved). */
+  /** The line notes to show: none while blame is hidden. */
+  hintsNow() { return this.blameCol ? this.blameHints : null; }
+
   applyHints() {
-    const h = this.blameHints;
+    const h = this.hintsNow();
     if (this.code) this.code.set_line_hints(this.doc?.kind === "text" ? h : null);
     if (this.edit?.state) this.edit.state.set_line_hints(this.edit.dirty ? null : h);
   }
@@ -582,6 +585,7 @@ export default class Preview extends View {
   toggleBlame(cx) {
     this.blameCol = !this.blameCol;
     try { localStorage.setItem(BLAME_KEY, this.blameCol ? "1" : "0"); } catch {}
+    this.applyHints();
     cx.notify();
   }
 
@@ -841,7 +845,7 @@ export default class Preview extends View {
     const state = EditorState.new({ readonly: false, font_family: settings().font_family, font_size: this.codeFont, syntax: syntax(theme()),
       ...(language ? { language } : {}), soft_wrap: this.wrapOn() || this.doc?.kind === "markdown", value, line_numbers: true });
     state.on("change", (_e, cx) => { if (this.edit === e) this.setDirty(state.value() !== e.base, cx); });
-    if (this.blameHints && !e.dirty) state.set_line_hints(this.blameHints);
+    if (this.hintsNow() && !e.dirty) state.set_line_hints(this.hintsNow());
     return state;
   }
 
@@ -883,7 +887,7 @@ export default class Preview extends View {
     const e = this.edit;
     if (!e || e.dirty === d) return;
     e.dirty = d;
-    e.state?.set_line_hints(d ? null : this.blameHints);
+    e.state?.set_line_hints(d ? null : this.hintsNow());
     if (d && this.note === "Saved") this.note = null;
     this.p.onDirty?.(d, cx);
     cx.notify();
@@ -1109,7 +1113,7 @@ export default class Preview extends View {
       .child(div().flex_1())
       .children(this.editButtons(t))
       .when(this.findable(), (el) => el.child(iconButton(t, "pv-find", "search", (_e, cx) => this.openFind(cx), { on: Boolean(this.ds) })))
-      .when(this.p.wide && doc?.kind === "text" && Boolean(this.blame), (el) => el.child(iconButton(t, "pv-blame", "history", (_e, cx) => this.toggleBlame(cx), { on: this.blameCol })))
+      .when(Boolean(this.blame) && (doc?.kind === "text" || this.editing()), (el) => el.child(iconButton(t, "pv-blame", "history", (_e, cx) => this.toggleBlame(cx), { on: this.blameCol })))
       .when(doc?.kind === "text", (el) => el.child(iconButton(t, "pv-wrap", "wrap-text", (_e, cx) => this.toggleWrap(cx), { on: this.wrapOn(), disabled: lang.wraps(lang.forPath(p.path)) })))
       .when(Boolean(doc) && doc.kind !== "binary" && doc.kind !== "missing" && doc.kind !== "error", (el) => el
         .child(iconButton(t, "pv-zoom-out", "zoom-out", (_e, cx) => this.textAct("out", cx), { disabled: this.textZoom === LEVELS[0] }))
@@ -1325,16 +1329,19 @@ export default class Preview extends View {
       body = div().flex_1().min_w(0).h_full().pl(4).child(editor);
       if (!m && !hits) return div().size_full().min_h(0).pt(4).child(body);
     } else {
+      // A short file still fills the view: the gutters run to the bottom (H), as in an editor.
       const lh = lineHeight(this.codeFont), text = this.doc.lines * lh, slack = Math.max(text, 3 * lh);
+      const H = Math.max(text, (this.codeViewH ?? 0) - 8);
       body = div().id(`pv-code:${this.p.path}`).flex_1().min_w(0).h_full().overflow_y_scrollbar()
-        .child(h_flex().w_full().h(text + 8).flex_none().pt(4).items_start()
-          .when(this.blameShown(), (el) => el.child(this.blameColumn(t, lh, text)))
-          .child(div().w(GUTTER).h(text).flex_none().relative()
+        .on_size_change((size, cx) => { const h = Math.round(size.height); if (h !== this.codeViewH) { this.codeViewH = h; cx.notify(); } })
+        .child(h_flex().w_full().h(H + 8).flex_none().pt(4).items_start()
+          .when(this.blameShown(), (el) => el.child(this.blameColumn(t, lh, H)))
+          .child(div().w(GUTTER).h(H).flex_none().relative()
             .when(Boolean(m), (e) => e
               .children(m.runs.map((r) => div().absolute().left(4).w(3).top((r.from - 1) * lh).h(r.n * lh).rounded(1).bg(r.kind === "a" ? t.ansi2 : t.ansi4)))
               .children(m.dels.map((n) => div().absolute().left(2).w(7).h(3).rounded(1).top(Math.max(0, Math.min(text - 3, n * lh - 1.5))).bg(t.ansi1)))))
-          .child(div().flex_1().min_w(0).h(text).overflow_hidden().relative()
-            .child(div().w_full().h(text + slack).flex_none().child(editor))
+          .child(div().flex_1().min_w(0).h(H).overflow_hidden().relative()
+            .child(div().w_full().h(H + slack).flex_none().child(editor))
             .when(Boolean(hits), (e) => e.children(this.lineMarks(hits.map((h) => h.line - 1), lh, t, cur - 1)))));
     }
     const rows = Math.max(1, this.doc.lines), pct = (n) => `${(100 * n) / rows}%`;

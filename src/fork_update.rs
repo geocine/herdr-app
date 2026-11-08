@@ -72,6 +72,9 @@ pub struct Release {
     /// Why it can't tell.
     pub note: Option<String>,
     pub checked: u64,
+    /// The build `newer` was decided for (its release tag, else its commit). After an
+    /// update the answer belongs to the old build: it's decided again (see `refit`).
+    pub against: Option<String>,
 }
 
 /// Upstream commits since a build's base.
@@ -138,6 +141,37 @@ fn have(build: Option<&crate::update::Build>) -> Have<'_> {
         (None, Some(sha)) => Have::Commit(sha),
         (None, None) => Have::Nothing,
     }
+}
+
+/// This build as a release check compares it: its release tag, else its commit.
+fn identity(build: Option<&crate::update::Build>) -> Option<String> {
+    match have(build) {
+        Have::Tag(tag) => Some(tag.to_owned()),
+        Have::Commit(sha) => Some(sha.to_owned()),
+        Have::Nothing => None,
+    }
+}
+
+/// A saved answer made for another build (the one before an update) isn't this
+/// build's: a release tag decides again at once; else it's unknown until the next
+/// check, which is due now.
+fn refit(state: &mut State, build: Option<&crate::update::Build>) {
+    let me = identity(build);
+    let Some(r) = state.release.as_mut() else { return };
+    if r.against == me {
+        return;
+    }
+    match have(build) {
+        Have::Tag(tag) => {
+            r.newer = newer_tag(&r.tag, tag);
+            r.note = None;
+        }
+        _ => {
+            r.newer = None;
+            r.checked = 0;
+        }
+    }
+    r.against = me;
 }
 
 /// GitHub's compare of the release (base) with this build (head): newer when
@@ -274,7 +308,7 @@ fn latest_release(api: &str, build: Option<&crate::update::Build>, now: u64) -> 
         },
         Have::Nothing => (None, Some(format!("This build doesn't say which commit it is, so Herdr can't tell if {tag} is newer."))),
     };
-    Ok(Release { tag, url, newer, note, checked: now })
+    Ok(Release { tag, url, newer, note, checked: now, against: identity(build) })
 }
 
 /// Upstream's commits since `base` (`compare/<base>...master`: master's ahead_by).
@@ -338,7 +372,11 @@ fn file() -> std::path::PathBuf {
 
 fn with_state<T>(f: impl FnOnce(&mut State) -> T) -> T {
     let mut s = STATE.lock().unwrap();
-    let state = s.get_or_insert_with(|| std::fs::read(file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default());
+    let state = s.get_or_insert_with(|| {
+        let mut state: State = std::fs::read(file()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        refit(&mut state, crate::update::Build::app().as_ref());
+        state
+    });
     f(state)
 }
 
@@ -574,8 +612,49 @@ mod tests {
         assert_eq!(newer_by_commit("diverged"), None);
     }
 
+    #[test]
+    fn an_answer_for_the_build_before_an_update_is_decided_again() {
+        let build = |tag: Option<&str>, sha: Option<&str>| crate::update::Build {
+            tag: tag.map(str::to_owned),
+            sha: sha.map(str::to_owned),
+            ..Default::default()
+        };
+        let saved = |against: Option<&str>| State {
+            release: Some(Release {
+                tag: "geocine-20261108-2026".into(),
+                newer: Some(true),
+                checked: 100,
+                against: against.map(str::to_owned),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Updated to that very release: no notice.
+        let mut s = saved(Some("geocine-20261108-1933"));
+        refit(&mut s, Some(&build(Some("geocine-20261108-2026"), Some("b2e4642"))));
+        let r = s.release.unwrap();
+        assert_eq!((r.newer, r.against.as_deref()), (Some(false), Some("geocine-20261108-2026")));
+        // A file from before `against` existed is refit too.
+        let mut s = saved(None);
+        refit(&mut s, Some(&build(Some("geocine-20261108-2026"), None)));
+        assert_eq!(s.release.unwrap().newer, Some(false));
+        // Still older than the release: still newer.
+        let mut s = saved(None);
+        refit(&mut s, Some(&build(Some("geocine-20261107-1719"), None)));
+        assert_eq!(s.release.unwrap().newer, Some(true));
+        // The same build: the answer stands.
+        let mut s = saved(Some("geocine-20261107-1719"));
+        refit(&mut s, Some(&build(Some("geocine-20261107-1719"), None)));
+        assert_eq!(s.release.as_ref().unwrap().checked, 100);
+        // A build from source: unknown, checked again now.
+        let mut s = saved(Some("geocine-20261108-1933"));
+        refit(&mut s, Some(&build(None, Some("abc1234"))));
+        let r = s.release.unwrap();
+        assert_eq!((r.newer, r.checked), (None, 0));
+    }
+
     fn release(newer: Option<bool>) -> Release {
-        Release { tag: "geocine-20261107-1559".into(), url: "https://github.com/geocine/herdr-app/releases/tag/geocine-20261107-1559".into(), newer, note: None, checked: 1 }
+        Release { tag: "geocine-20261107-1559".into(), url: "https://github.com/geocine/herdr-app/releases/tag/geocine-20261107-1559".into(), newer, note: None, checked: 1, against: None }
     }
 
     fn upstream_of(app: u64, core: Option<u64>) -> Upstream {
