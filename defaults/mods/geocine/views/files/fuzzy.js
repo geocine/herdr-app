@@ -61,13 +61,12 @@ export function fuzzy(rel, words) {
 
 export const words = (query) => query.toLowerCase().split(/\s+/).filter(Boolean);
 
-// The best `limit` of `all` for the query, best first: [{ rel, score, pos }].
-export function search(all, lower, query, limit = 200) {
-  const ws = words(query);
-  if (!ws.length) return [];
-  const first = ws.map((w) => w[0]);
-  const hits = [];
-  for (let i = 0; i < all.length; i++) {
+const order = (a, b) => b.score - a.score || a.rel.length - b.rel.length || (a.rel < b.rel ? -1 : 1);
+
+// Matches all[from, to) into hits; keeps hits to the best `limit` once it grows past 4 × limit
+// (a one-letter query matches nearly everything, and sorting it all would cost more than the scan).
+function scan(all, lower, ws, first, from, to, hits, limit) {
+  for (let i = from; i < to; i++) {
     const low = lower[i];
     // Quick reject: every word's first character must be there.
     let ok = true;
@@ -76,6 +75,32 @@ export function search(all, lower, query, limit = 200) {
     const m = fuzzy(all[i], ws);
     if (m) hits.push({ rel: all[i], score: m.score, pos: m.pos });
   }
-  hits.sort((a, b) => b.score - a.score || a.rel.length - b.rel.length || (a.rel < b.rel ? -1 : 1));
+  if (hits.length > limit * 4) { hits.sort(order); hits.length = limit; }
+}
+
+// The best `limit` of `all` for the query, best first: [{ rel, score, pos }]. All at once: for
+// short lists (a few thousand paths scan in tens of ms).
+export function search(all, lower, query, limit = 200) {
+  const ws = words(query);
+  if (!ws.length) return [];
+  const hits = [];
+  scan(all, lower, ws, ws.map((w) => w[0]), 0, all.length, hits, limit);
+  hits.sort(order);
+  return hits.slice(0, limit);
+}
+
+// The same, SLICE paths at a time (~30 ms), letting the app draw between slices: 40,000 paths take
+// longer than a task may run at once (it would be interrupted) and would freeze typing. Null when
+// alive() turns false (a newer query) between slices.
+const SLICE = 1500;
+export async function searchSliced(all, lower, query, limit, cx, alive) {
+  const ws = words(query);
+  if (!ws.length) return [];
+  const first = ws.map((w) => w[0]), hits = [];
+  for (let at = 0; at < all.length; at += SLICE) {
+    if (at) { await cx.sleep(0); if (!alive()) return null; }
+    scan(all, lower, ws, first, at, Math.min(all.length, at + SLICE), hits, limit);
+  }
+  hits.sort(order);
   return hits.slice(0, limit);
 }

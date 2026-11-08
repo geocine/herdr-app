@@ -225,30 +225,42 @@ function hash(text) {
 
 const blank = (p) => ({ path: p, oldPath: null, status: "A", binary: false, adds: 0, dels: 0, hunks: [], oldSha: null, newSha: null, oldMode: null, newMode: null, similarity: null, truncated: false, untracked: true });
 
+// An untracked file's text as a whole added file.
+function fromText(p, text) {
+  const f = blank(p);
+  f.newSha = hash(text);
+  if (text.includes("\0")) { f.binary = true; return f; }
+  if (!text) return f;
+  const lines = text.replace(/\r?\n$/, "").split(/\r?\n/), kept = lines.slice(0, MAX_FILE_LINES);
+  f.adds = lines.length; f.truncated = kept.length < lines.length;
+  f.hunks = [{ header: `@@ -0,0 +1,${lines.length} @@`, context: "", oldStart: 0, newStart: 1, oldLines: 0, newLines: lines.length,
+    lines: kept.map((l, i) => ({ kind: "add", text: l, old: null, new: i + 1 })) }];
+  if (!/\n$/.test(text)) f.hunks[0].lines.push({ kind: "meta", text: "\\ No newline at end of file", old: null, new: null });
+  return f;
+}
+
+const readable = (text) => typeof text === "string" && text.length < 1000000;
+
 // One untracked file as a whole added file: read as text (no process per file), else by git.
 async function untrackedDiff(top, on, p) {
   const text = await readTextFile(`${top}/${p}`, { on }).catch(() => undefined);
-  if (typeof text === "string" && text.length < 1000000) {
-    const f = blank(p);
-    f.newSha = hash(text);
-    if (text.includes("\0")) { f.binary = true; return f; }
-    if (!text) return f;
-    const lines = text.replace(/\r?\n$/, "").split(/\r?\n/), kept = lines.slice(0, MAX_FILE_LINES);
-    f.adds = lines.length; f.truncated = kept.length < lines.length;
-    f.hunks = [{ header: `@@ -0,0 +1,${lines.length} @@`, context: "", oldStart: 0, newStart: 1, oldLines: 0, newLines: lines.length,
-      lines: kept.map((l, i) => ({ kind: "add", text: l, old: null, new: i + 1 })) }];
-    if (!/\n$/.test(text)) f.hunks[0].lines.push({ kind: "meta", text: "\\ No newline at end of file", old: null, new: null });
-    return f;
-  }
+  if (readable(text)) return fromText(p, text);
   const parsed = parseDiff(await run(["diff", ...DIFF_FLAGS, "--no-index", "--", "/dev/null", p], top, on).catch(() => ""));
   // --no-index names the path as given; keep it repo-relative and "/"-separated.
   return Object.assign(parsed[0] ?? blank(p), { path: p, oldPath: null, status: "A", untracked: true });
 }
 
-// The diffs of untracked files: each one as a whole added file.
-async function untrackedDiffs(top, on, paths) {
+// The diffs of untracked files: each one as a whole added file. A few named files that read as
+// text need no git at all, when the caller already knows they are untracked (`known`: the
+// "untracked" source); anything else (a folder, a missing or binary file, the "head" source,
+// where a named file may be tracked) asks git which files are untracked first.
+async function untrackedDiffs(top, on, paths, known = false) {
+  if (known && paths?.length && paths.length <= 32 && paths.every(p => p && !p.endsWith("/"))) {
+    const texts = await Promise.all(paths.map(p => readTextFile(`${top}/${p}`, { on }).catch(() => undefined)));
+    if (texts.every(readable)) return paths.map((p, i) => fromText(p, texts[i]));
+  }
   const all = await untrackedFiles(top, on, paths), list = all.slice(0, MAX_UNTRACKED), files = [];
-  for (let i = 0; i < list.length; i += 16) files.push(...await Promise.all(list.slice(i, i + 16).map(p => untrackedDiff(top, on, p))));
+  for (let i = 0; i < list.length; i += 32) files.push(...await Promise.all(list.slice(i, i + 32).map(p => untrackedDiff(top, on, p))));
   if (all.length > list.length) files.more = all.length - list.length;
   return files;
 }
@@ -266,14 +278,21 @@ export async function loadDiff({ on = null, top, source, paths } = {}) {
   const kind = source.kind, spec = pathspec(paths);
   if (kind === "unstaged") return parseDiff(await run(["diff", ...DIFF_FLAGS, ...spec], top, on));
   if (kind === "staged") {
-    const base = (await hasHead(top, on)) ? [] : [await emptyTree(top, on)];
-    return parseDiff(await run(["diff", ...DIFF_FLAGS, "--cached", "-M", ...base, ...spec], top, on));
+    // Without a commit yet, --cached shows everything staged (git diff's own rule); an older git
+    // that refuses gets the empty tree.
+    const args = ["diff", ...DIFF_FLAGS, "--cached", "-M"];
+    try { return parseDiff(await run([...args, ...spec], top, on)); }
+    catch (e) { if (await hasHead(top, on)) throw e; return parseDiff(await run([...args, await emptyTree(top, on), ...spec], top, on)); }
   }
-  if (kind === "untracked") return untrackedDiffs(top, on, paths);
+  if (kind === "untracked") return untrackedDiffs(top, on, paths, true);
   if (kind === "head") {
-    const base = (await hasHead(top, on)) ? "HEAD" : await emptyTree(top, on);
-    const [tracked, fresh] = await Promise.all([run(["diff", ...DIFF_FLAGS, "-M", base, ...spec], top, on), untrackedDiffs(top, on, paths)]);
-    const files = parseDiff(tracked), seen = new Set(files.map(f => f.path));
+    // Against HEAD at once; only a repo without commits (the diff fails) asks for the empty tree.
+    const tracked = async () => {
+      try { return await run(["diff", ...DIFF_FLAGS, "-M", "HEAD", ...spec], top, on); }
+      catch (e) { if (await hasHead(top, on)) throw e; return run(["diff", ...DIFF_FLAGS, "-M", await emptyTree(top, on), ...spec], top, on); }
+    };
+    const [text, fresh] = await Promise.all([tracked(), untrackedDiffs(top, on, paths)]);
+    const files = parseDiff(text), seen = new Set(files.map(f => f.path));
     for (const f of fresh) if (!seen.has(f.path)) files.push(f);
     if (fresh.more) files.more = fresh.more;
     return files;

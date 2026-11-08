@@ -4,7 +4,7 @@ import { View, div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { props, theme } from "herdr";
 import { SIZE, segmented, iconButton } from "../lib/ui.js";
-import { FULL_TABS, closeFull, openFull } from "../lib/nav.js";
+import { FULL_TABS, closeFull } from "../lib/nav.js";
 import { inline } from "../lib/inline.js";
 // A cycle (index.js imports this file), fine: VIEWS is only read once a view mounts.
 import { VIEWS } from "./index.js";
@@ -13,18 +13,24 @@ export default class Full extends View {
   init(_p, cx) {
     const p = props() ?? {};
     this.tab = FULL_TABS.some(x => x.id === p.tab) ? p.tab : "files";
-    this.view = inline(VIEWS[this.tab], { wide: true, full: true, start: p.start ?? null }, cx);
+    // The views visited, kept for the overlay's life: switching back is instant (no reload),
+    // and a view starts once, in this copy, with its own tasks.
+    this.views = new Map([[this.tab, inline(VIEWS[this.tab], { wide: true, full: true, start: p.start ?? null }, cx)]]);
   }
 
-  close(cx) {
-    return this.view?.close?.(cx);
+  get view() { return this.views.get(this.tab); }
+
+  async close(cx) {
+    await Promise.all([...this.views.values()].map(v => Promise.resolve(v?.close?.(cx)).catch(() => {})));
   }
 
-  // Another view: full mode opens again on it (a view starts in init, with its own tasks).
-  switchTo(id) {
-    if (id === this.tab) return;
-    closeFull();
-    openFull(id);
+  // Another view, in this same overlay. The first visit starts it; it stays for later visits.
+  switchTo(id, cx) {
+    if (id === this.tab || !VIEWS[id]) return;
+    if (!this.views.has(id)) this.views.set(id, inline(VIEWS[id], { wide: true, full: true, start: null }, cx));
+    this.tab = id;
+    this.view?.handle?.focus?.();
+    cx.notify();
   }
 
   render(cx) {
@@ -33,7 +39,7 @@ export default class Full extends View {
       .child(h_flex().h(40).flex_none().px(12).gap(10).items_center().bg(t.chrome).border_b(1).border_color(t.border)
         .child(svg("mods/geocine/icons/ui/expand.svg").size(SIZE.icon).text_color(t.accent))
         .child(div().text_size(13).font_semibold().child("Geocine"))
-        .child(segmented(t, "full-tabs", FULL_TABS, this.tab, (id) => this.switchTo(id)))
+        .child(segmented(t, "full-tabs", FULL_TABS, this.tab, (id, cx) => this.switchTo(id, cx)))
         .child(div().flex_1())
         .child(div().text_size(SIZE.small).text_color(t.dim).child("Esc closes"))
         .child(iconButton(t, "full-close", "close", () => closeFull())))

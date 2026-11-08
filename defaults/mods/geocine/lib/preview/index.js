@@ -38,6 +38,15 @@ const DEBOUNCE = 200, MAX_WAIT = 1000;   // live reload: agents write in bursts
 const POLL = 2500, MARKS_EVERY = 4000;
 const FULL_MAX = 1000;       // code files up to this many rows get the line gutter; longer ones, the ruler only
 const GUTTER = 10, RULER = 12;
+// Syntax colors cost: an EditorState with a language parses its whole text with syntect on the
+// UI thread, ~3–4 ms per KB (a 75 KB file: ~250 ms), at creation and on every set_value/keystroke.
+// Without a language it is ~free. So text shows plain at once and gets its colors a step later.
+const HL_SYNC = 6000;        // chars colored before the first paint
+const HL_MAX = 160000;       // a code file or fence past this stays plain (one parse would freeze ~0.5 s)
+const EDIT_HL_MAX = 24000;   // editing re-parses the whole text per keystroke: plain past this
+const HL_BUDGET = 24;        // ms of coloring per step (Markdown fences), then a frame
+const HL_DELAY = 30;         // ms before a step, so the plain text paints first
+const RULER_MAX = 300;       // overview ruler marks drawn; more are merged by position
 const BAR_X = 10;            // a Markdown block's find bar sits this far right of the column
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 // Esc and Ctrl+F bound to these contexts outrank the app's bindings (Esc would close a dialog).
@@ -58,6 +67,14 @@ function blend(a, b, w) {
   return out;
 }
 const plural = (n, w) => `${n.toLocaleString("en-US")} ${w}${n === 1 ? "" : "s"}`;
+/** Ruler rows (from 0) merged to at most RULER_MAX by position, `keep` always kept. */
+function thin(rows, total, keep = -1) {
+  if (rows.length <= RULER_MAX) return rows;
+  const out = [], seen = new Set();
+  for (const r of rows) { const bin = Math.floor((r * RULER_MAX) / Math.max(1, total)); if (!seen.has(bin)) { seen.add(bin); out.push(r); } }
+  if (keep >= 0 && !out.includes(keep)) out.push(keep);
+  return out;
+}
 const rowCount = (text) => { let n = 1; for (let i = text.indexOf("\n"); i >= 0; i = text.indexOf("\n", i + 1)) n++; return n; };
 const isAbs = (p) => /^([a-z]:)?\//i.test(p);
 
@@ -114,6 +131,10 @@ export default class Preview extends View {
     this.wrap = localStorage.getItem(WRAP_KEY) === "1";
     this.blocks = [];     // Markdown: [{ kind: "md", text } | { kind: "code", info, text, state } | { kind: "mmd", ... }]
     this.code = null;     // EditorState of a code file
+    this.codeLater = false;  // this.code is plain for now; colors come with the next coloring step
+    this.codeBare = false;   // this.code stays plain: too large to color
+    this.hlToken = 0;     // bumps when the EditorStates are released: coloring steps for them stop
+    this.coloring = null; // the token a coloring step is scheduled for
     this.doc = null;      // what readDoc returned
     this.gen = 0;         // bumps when the file changes (props); stale loops and loads stop
     this.seq = 0;         // bumps on every load; late results are dropped
@@ -135,6 +156,11 @@ export default class Preview extends View {
   update(props) {
     const next = norm(props);
     const moved = ident(next) !== ident(this.p);
+    // Only the repo top arrived (a host learns it after showing the file): same file, no reread.
+    if (moved && ident({ ...next, repoTop: this.p.repoTop }) === ident(this.p)) {
+      if (this.ask?.kind === "switch") this.ask = null;   // the host went back to this file
+      this.p = next; this.topMoved = true; return;
+    }
     // Unsaved edits: the new file waits for Save / Discard / Cancel.
     if (moved && this.edit?.dirty) { this.ask = { kind: "switch", next }; return; }
     if (!moved && this.ask?.kind === "switch") this.ask = null;   // the host went back to this file
@@ -157,6 +183,8 @@ export default class Preview extends View {
     this.blocks = [];
     this.code?.release();
     this.code = null;
+    this.codeLater = this.codeBare = false;
+    this.hlToken++;
   }
 
   stopTasks() {
@@ -216,7 +244,7 @@ export default class Preview extends View {
   watch(gen, cx) {
     const p = this.p, abs = this.abs();
     if (p.rev || !abs) return;
-    if (this.doc?.kind === "text" && !p.rev) this.tasks.push(cx.timer.every(MARKS_EVERY, (cx) => { if (this.gen === gen && this.inRepo !== false) this.refreshMarks(cx); }));
+    if (this.doc?.kind === "text" && !p.rev) { this.headSeen = undefined; if (this.headLocal()) this.checkHead(gen, cx); this.tasks.push(cx.timer.every(MARKS_EVERY, (cx) => this.checkHead(gen, cx))); }
     if (p.on) return this.poll(gen, cx);
     const folder = dirName(abs), me = abs.toLowerCase(), up = folder.toLowerCase();
     cx.spawn(async (cx) => {
@@ -248,15 +276,20 @@ export default class Preview extends View {
     }));
   }
 
-  /** A watch batch: reload 200 ms after the last one, at most 1 s late. */
+  /**
+   * A watch batch: reload 200 ms after the last one, at most 1 s late. A large colored code file
+   * re-parses its colors on every reload (UI thread), so it waits longer, in proportion.
+   */
   changed(gen, cx) {
     const now = Date.now();
+    const parse = this.code && !this.codeBare && this.doc?.kind === "text" && lang.forPath(this.p.path) ? this.doc.text.length / 280 : 0;   // ~ms
+    const wait = Math.max(DEBOUNCE, 2 * parse), most = Math.max(MAX_WAIT, 8 * parse);
     this.since ??= now;
     if (this.flushing && !this.flushing.is_done()) {
-      if (now - this.since >= MAX_WAIT) return;
+      if (now - this.since >= most) return;
       this.flushing.cancel();
     }
-    this.flushing = cx.timer.after(DEBOUNCE, (cx) => { this.since = null; if (this.gen === gen) this.load(cx, true); });
+    this.flushing = cx.timer.after(wait, (cx) => { this.since = null; if (this.gen === gen) this.load(cx, true); });
   }
 
   reload(cx) { this.load(cx, true); this.refreshMarks(cx); }
@@ -283,7 +316,12 @@ export default class Preview extends View {
   patch(prev) {
     const doc = this.doc;
     if (!prev || prev.kind !== doc.kind) return false;
-    if (doc.kind === "text") { if (!this.code) return false; this.code.set_value(doc.text); return true; }
+    if (doc.kind === "text") {
+      // Crossing the color limit makes a new state; else the text goes in place (colors re-parse).
+      if (!this.code || this.codeBare !== this.tooBig(doc.text)) return false;
+      this.code.set_value(doc.text);
+      return true;
+    }
     if (doc.kind !== "markdown") return false;
     const next = this.plan(doc.segments);
     if (next.length !== this.blocks.length || next.some((b, i) => b.kind !== this.blocks[i].kind || (b.kind === "code" && b.info !== this.blocks[i].info))) return false;
@@ -307,59 +345,131 @@ export default class Preview extends View {
     this.release();
     const doc = this.doc;
     if (!doc) return;
-    if (doc.kind === "text") { this.code = this.codeState(); return; }
+    if (doc.kind === "text") { this.makeCode(cx); return; }
     if (doc.kind !== "markdown") return;
+    // Fences get their colors while the first HL_BUDGET ms last; the rest show plain and are
+    // colored a step at a time (colorStep), top first.
+    const t0 = Date.now();
     for (const b of this.plan(doc.segments)) {
       if (b.kind === "md" || b.kind === "quote" || b.kind === "pic" || b.kind === "mmd") { this.blocks.push(b); continue; }
-      this.blocks.push({ ...b, state: this.fenceState(b.text, lang.forFence(b.info)) });
+      this.blocks.push(this.fence(b, Date.now() - t0 < HL_BUDGET));
     }
+    this.colorLater(cx);
   }
 
-  codeState() {
-    const language = lang.forPath(this.p.path);
+  /** A code block with its EditorState: colored now, or plain with `later` set (or for good when too large). */
+  fence(b, now) {
+    const language = lang.forFence(b.info), color = Boolean(language) && b.text.length <= HL_MAX;
+    b.later = color && !now;
+    b.state = this.fenceState(b.text, color && now ? language : null, language);
+    return b;
+  }
+
+  tooBig(text) { return Boolean(lang.forPath(this.p.path)) && text.length > HL_MAX; }
+
+  /** The code file's EditorState: colored at once when small, else plain now and colored on the next step. */
+  makeCode(cx) {
+    this.code?.release();
+    const text = this.doc?.text ?? "", language = lang.forPath(this.p.path);
+    this.codeBare = this.tooBig(text);
+    const now = !language || this.codeBare || text.length <= HL_SYNC || !cx;
+    this.codeLater = !now;
+    this.code = this.codeState(now && !this.codeBare);
+    this.colorLater(cx);
+  }
+
+  /** Schedules a coloring step for what was left plain (codeLater, fences' `later`). */
+  colorLater(cx) {
+    if (!cx || this.coloring === this.hlToken) return;
+    if (!this.codeLater && !this.blocks.some((b) => b.later)) return;
+    const token = this.coloring = this.hlToken;
+    cx.timer.after(HL_DELAY, (cx) => {
+      if (this.coloring === token) this.coloring = null;
+      if (token === this.hlToken) this.colorStep(cx);
+    });
+  }
+
+  /**
+   * Colors the code file, or fences for about HL_BUDGET ms (at least one), then lets a frame through.
+   * Each step redraws: a colored fence's first paint is the costly part (~60 ms for 6 KB), so
+   * batching several into one redraw only makes that frame longer.
+   */
+  colorStep(cx) {
+    const t0 = Date.now();
+    let done = 0;
+    if (this.codeLater && this.code) {
+      this.code.release();
+      this.code = this.codeState(true);
+      this.codeLater = false;
+      done++;
+    }
+    for (const b of this.blocks) {
+      if (!b.later) continue;
+      if (done && Date.now() - t0 >= HL_BUDGET) break;
+      const s = this.fenceState(b.text, lang.forFence(b.info));
+      b.state.release();
+      b.state = s;
+      b.later = false;
+      done++;
+    }
+    if (done) cx.notify();
+    this.colorLater(cx);
+  }
+
+  codeState(color = true) {
+    const language = color ? lang.forPath(this.p.path) : null;
     return EditorState.new({ readonly: true, font_family: settings().font_family, font_size: this.codeFont, syntax: syntax(theme()),
       ...(language ? { language } : {}), soft_wrap: this.wrapOn(), value: this.doc?.text ?? "" });
   }
 
-  fenceState(value, language) {
+  /** wrapAs: the fence's language for soft wrap, when it's drawn plain for now. */
+  fenceState(value, language, wrapAs = language) {
     return EditorState.new({ readonly: true, font_family: settings().font_family, font_size: this.codeFont, syntax: syntax(theme()),
-      ...(language ? { language } : {}), value, line_numbers: false, folding: false, soft_wrap: lang.wraps(language) });
+      ...(language ? { language } : {}), value, line_numbers: false, folding: false, soft_wrap: lang.wraps(wrapAs) });
   }
 
   /** Soft wrap of the code view: the person's toggle, and always for JSON. */
   wrapOn() { return this.wrap || lang.wraps(lang.forPath(this.p.path ?? "")); }
 
-  /** EditorStates take their font and colors at creation: new ones in place. */
-  refont() {
-    if (this.code) { this.code.release(); this.code = this.codeState(); }
+  /** EditorStates take their font and colors at creation: new ones in place (plain first, colored by steps). */
+  refont(cx) {
+    if (this.code) this.makeCode(cx);
     if (this.edit) { const v = this.edit.state.value(); this.edit.state.release(); this.edit.state = this.editState(v); }
+    const t0 = Date.now();
     for (const b of this.blocks) {
       if (!b.state) continue;
       b.state.release();
-      b.state = this.fenceState(b.text, b.kind === "mmd" ? null : lang.forFence(b.info));
+      if (b.kind === "mmd") { b.state = this.fenceState(b.text, null); b.later = false; }
+      else this.fence(b, Date.now() - t0 < HL_BUDGET);
       b.vis = null;
     }
+    this.colorLater(cx);
   }
 
   // ---- git marks ------------------------------------------------------------------
 
-  /** Changed lines of the code file against HEAD (none at a commit, in Markdown, outside a repo). */
-  refreshMarks(cx) {
+  /**
+   * Changed lines of the code file against HEAD (none at a commit, in Markdown, outside a repo).
+   * poll: a periodic check, which asks for the status alone and diffs only when it moved;
+   * otherwise status and diff run at once.
+   */
+  refreshMarks(cx, poll = false) {
     const doc = this.doc, p = this.p, abs = this.abs(), gen = this.gen;
     if (!doc || doc.kind !== "text" || p.rev || !abs) { this.setMarks(null); return; }
     if (this.marking) { this.markAgain = true; return; }
     this.marking = true;
     const folder = dirName(abs), name = baseName(abs);
     cx.spawn(async (cx) => {
-      let m, st;
+      let m, st, diff = null;
       try {
-        st = await git.status(folder, name, p.on);
+        if (poll) st = await git.status(folder, name, p.on);
+        else ({ st, diff } = await git.both(folder, name, p.on));
         if (st === null) this.inRepo = false;
         else if (st !== undefined) {
           this.inRepo = true;
           // Unchanged status and text: the marks stand.
-          if (st === this.lastStatus && doc === this.marksDoc) m = this.marks;
-          else m = await git.changes(folder, name, doc.text, p.on, st);
+          if (poll && st === this.lastStatus && doc === this.marksDoc) m = this.marks;
+          else m = await git.changes(folder, name, doc.text, p.on, st, diff);
         }
       } finally { this.marking = false; }
       if (this.gen === gen && this.doc === doc && m !== undefined) {
@@ -370,9 +480,39 @@ export default class Preview extends View {
     });
   }
 
+  /**
+   * The marks' periodic check: HEAD can move (a commit) while the file stays. Here, with a known
+   * repo top, that's read from .git's files (no process); else (another machine, no top) a git status.
+   */
+  /** HEAD is read from .git's files: this computer, a known repo top, and the file inside it (not in a nested repo or elsewhere). */
+  headLocal() {
+    const p = this.p, abs = this.abs();
+    return !p.on && Boolean(p.repoTop) && Boolean(abs) && abs.toLowerCase().startsWith(p.repoTop.toLowerCase() + "/");
+  }
+
+  checkHead(gen, cx) {
+    if (this.gen !== gen || this.inRepo === false || this.headBusy) return;
+    const p = this.p;
+    if (!this.headLocal()) return this.refreshMarks(cx, true);
+    this.headBusy = true;
+    cx.spawn(async (cx) => {
+      let s;
+      try { s = await git.headStamp(p.repoTop); } catch { s = null; } finally { this.headBusy = false; }
+      if (this.gen !== gen || this.p.repoTop !== p.repoTop) return;
+      if (s === null) { this.headSeen = undefined; return this.refreshMarks(cx, true); }
+      const before = this.headSeen;
+      this.headSeen = s;
+      if (before !== undefined && s !== before) this.refreshMarks(cx);
+    });
+  }
+
   setMarks(m) {
     this.marks = m;
-    this.codeMarks = m && this.doc?.kind === "text" ? { runs: git.runs(m), dels: [...m.dels].sort((a, b) => a - b), sum: git.summary(m) } : null;
+    if (!m || this.doc?.kind !== "text") { this.codeMarks = null; return; }
+    const runs = git.runs(m), dels = [...m.dels].sort((a, b) => a - b), rows = Math.max(1, this.doc.lines ?? 1);
+    // The ruler draws at most RULER_MAX of each (a file changed all over has thousands).
+    const byRow = new Map(runs.map((r) => [r.from - 1, r])), keep = thin(runs.map((r) => r.from - 1), rows);
+    this.codeMarks = { runs, dels, sum: git.summary(m), rulerRuns: keep.map((r) => byRow.get(r)), rulerDels: thin(dels, rows) };
   }
 
   // ---- zoom and wrap ----------------------------------------------------------------
@@ -384,14 +524,14 @@ export default class Preview extends View {
     this.textZoom = z;
     try { if (z === 1) localStorage.removeItem(ZOOM_KEY); else localStorage.setItem(ZOOM_KEY, String(z)); } catch {}
     const font = Math.round(FONT * z);
-    if (font !== this.codeFont) { this.codeFont = font; this.refont(); }
+    if (font !== this.codeFont) { this.codeFont = font; this.refont(cx); }
     cx.notify();
   }
 
   toggleWrap(cx) {
     this.wrap = !this.wrap;
     try { localStorage.setItem(WRAP_KEY, this.wrap ? "1" : "0"); } catch {}
-    if (this.code) { this.code.release(); this.code = this.codeState(); }
+    if (this.code) this.makeCode(cx);
     cx.notify();
   }
 
@@ -455,9 +595,10 @@ export default class Preview extends View {
     for (const b of this.blocks) if (b.kind === "pic") for (const x of b.pics) if (!this.pics.has(x.src) && !want.includes(x.src)) want.push(x.src);
     if (!want.length) return;
     for (const src of want) this.pics.set(src, undefined);   // asked for
-    const base = dirName(abs), pics = this.pics;
-    cx.spawn(async (cx) => {
-      for (const src of want.slice(0, 24)) {
+    const base = dirName(abs), pics = this.pics, queue = want.slice(0, 24);
+    // A few at a time: each is a process (a copy into the cache).
+    for (let k = 0; k < 4; k++) cx.spawn(async (cx) => {
+      for (let src; (src = queue.shift()) !== undefined;) {
         let path = src.split(/[?#]/)[0];
         try { path = decodeURI(path); } catch {}
         path = slash(path);
@@ -612,7 +753,9 @@ export default class Preview extends View {
   editing() { return Boolean(this.edit) && (this.doc?.kind !== "markdown" || this.source); }
 
   editState(value) {
-    const language = lang.forPath(this.p.path), e = this.edit;
+    // Every keystroke re-parses the whole text for colors: a large file is edited plain.
+    const language = value.length <= EDIT_HL_MAX ? lang.forPath(this.p.path) : null, e = this.edit;
+    e.plain = !language && Boolean(lang.forPath(this.p.path));
     const state = EditorState.new({ readonly: false, font_family: settings().font_family, font_size: this.codeFont, syntax: syntax(theme()),
       ...(language ? { language } : {}), soft_wrap: this.wrapOn() || this.doc?.kind === "markdown", value, line_numbers: true });
     state.on("change", (_e, cx) => { if (this.edit === e) this.setDirty(state.value() !== e.base, cx); });
@@ -835,7 +978,12 @@ export default class Preview extends View {
     if (s !== this.themeSig) {
       // Theme or font changed: colors are baked into the EditorStates, so rebuild them (not from render).
       this.themeSig = s;
-      cx.timer.after(1, (cx) => { this.refont(); for (const b of this.blocks) if (b.kind === "mmd") b.d = null; this.diagrams(cx); cx.notify(); });
+      cx.timer.after(1, (cx) => { this.refont(cx); for (const b of this.blocks) if (b.kind === "mmd") b.d = null; this.diagrams(cx); cx.notify(); });
+    }
+    if (this.topMoved) {
+      // The repo top arrived: pictures written from the repo's top ("/docs/a.png") can be found now.
+      this.topMoved = false;
+      cx.timer.after(1, (cx) => { for (const [k, v] of this.pics) if (v === null) this.pics.delete(k); this.pictures(this.gen, cx); });
     }
     const root = v_flex().id("pv-root").size_full().min_w(0).min_h(0).bg(t.background).text_color(t.foreground)
       .track_focus(this.focus).key_context(DOC_CONTEXT).on_action(FIND_OPEN, (_e, cx) => this.openFind(cx))
@@ -940,6 +1088,8 @@ export default class Preview extends View {
     if (!p.path) return div();
     parts.push(doc?.kind === "binary" ? "Binary" : lang.label(p.path));
     if (doc?.kind === "text") parts.push(plural(doc.lines, "line"));
+    if (doc?.kind === "text" && this.codeBare && !this.edit) parts.push("no colors: large file");
+    if (this.edit?.plain && this.editing()) parts.push("no colors while editing: large file");
     if (doc?.kind === "image" && doc.w) parts.push(`${doc.w} × ${doc.h}`);
     if (doc?.size) parts.push(mb(doc.size));
     if (doc?.kind === "markdown") {
@@ -982,8 +1132,8 @@ export default class Preview extends View {
     return h_flex().size_full().min_h(0)
       .child(div().flex_1().min_w(0).h_full().pt(4).pl(4).border_l(2).border_color(e.dirty ? t.ansi3 : t.accent).child(Editor.new(e.state).size_full()))
       .when(Boolean(m) && !e.dirty, (el) => el.child(div().w(RULER).flex_none().h_full().relative().border_l(1).border_color(t.border).bg(t.chrome)
-        .children(m.runs.map((r) => at(div().absolute().left(3).w(RULER - 7).h(pct(r.n)).min_h(3).rounded(1).bg(r.kind === "a" ? t.ansi2 : t.ansi4), r.from - 1, r.n)))
-        .children(m.dels.map((n) => at(div().absolute().left(2).w(RULER - 5).h(2).rounded(1).bg(t.ansi1), n, 0)))));
+        .children(m.rulerRuns.map((r) => at(div().absolute().left(3).w(RULER - 7).h(pct(r.n)).min_h(3).rounded(1).bg(r.kind === "a" ? t.ansi2 : t.ansi4), r.from - 1, r.n)))
+        .children(m.rulerDels.map((n) => at(div().absolute().left(2).w(RULER - 5).h(2).rounded(1).bg(t.ansi1), n, 0)))));
   }
 
   // ---- Markdown ------------------------------------------------------------------------
@@ -1101,10 +1251,17 @@ export default class Preview extends View {
     return h_flex().size_full().min_h(0).child(body)
       .when(Boolean(m) || Boolean(hits), (el) => el.child(div().w(RULER).flex_none().h_full().relative().border_l(1).border_color(t.border).bg(t.chrome)
         .when(Boolean(m), (e) => e
-          .children(m.runs.map((r) => at(div().absolute().left(3).w(RULER - 7).h(pct(r.n)).min_h(3).rounded(1).bg(r.kind === "a" ? t.ansi2 : t.ansi4), r.from - 1, r.n)))
-          .children(m.dels.map((n) => at(div().absolute().left(2).w(RULER - 5).h(2).rounded(1).bg(t.ansi1), n, 0))))
-        .when(Boolean(hits), (e) => e.children(hits.map((h) => at(div().absolute().right(0).w(h.line === cur ? RULER - 1 : 4).h(pct(1))
-          .min_h(h.line === cur ? 3 : 2).bg(h.line === cur ? t.foreground : t.accent), h.line - 1, 1))))));
+          .children(m.rulerRuns.map((r) => at(div().absolute().left(3).w(RULER - 7).h(pct(r.n)).min_h(3).rounded(1).bg(r.kind === "a" ? t.ansi2 : t.ansi4), r.from - 1, r.n)))
+          .children(m.rulerDels.map((n) => at(div().absolute().left(2).w(RULER - 5).h(2).rounded(1).bg(t.ansi1), n, 0))))
+        .when(Boolean(hits), (e) => e.children(this.rulerHits(rows).map((r) => at(div().absolute().right(0).w(r === cur - 1 ? RULER - 1 : 4).h(pct(1))
+          .min_h(r === cur - 1 ? 3 : 2).bg(r === cur - 1 ? t.foreground : t.accent), r, 1))))));
+  }
+
+  /** The find hits' rows (from 0) for the ruler, merged to RULER_MAX; kept until the hits or the current one change. */
+  rulerHits(rows) {
+    const ds = this.ds, cur = ds.hits[ds.at].line - 1;
+    if (ds.ruler?.hits !== ds.hits || ds.ruler.cur !== cur || ds.ruler.rows !== rows) ds.ruler = { hits: ds.hits, cur, rows, list: thin(ds.hits.map((h) => h.line - 1), rows, cur) };
+    return ds.ruler.list;
   }
 
   /** Rows (from 0) with matches: a tint across the row and a bar at the right edge; `at` stronger. */

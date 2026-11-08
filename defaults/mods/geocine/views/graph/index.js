@@ -7,7 +7,7 @@
 // Overlays (menu, dialog, settings) are this same view with props.role. See NOTICE.md.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar, v_virtual_list, VirtualListScrollHandle, InputState, Input } from "gpui-base";
-import { props, theme, settings, shared, setShared, watchFolder, home, notify } from "herdr";
+import { props, theme, settings, shared, setShared, watchFolder, home, notify, layout, panes, focused } from "herdr";
 import { SIZE, ui, monoFont, frame, header, subbar, segmented, iconButton, textButton, empty, row, section } from "../../lib/ui.js";
 import { location, baseName, slash } from "../../lib/where.js";
 import { gitRead, gitWrite } from "../../lib/git.js";
@@ -17,14 +17,14 @@ import Diff from "../../lib/diff/index.js";
 import Preview from "../../lib/preview/index.js";
 import { layoutLanes } from "./lanes.js";
 import { UNCOMMITTED, LABEL, withUncommitted, labelsOf, hitLabel } from "./ops.js";
-import { PAGE, readFolder, readStatus, readDetails, readUncommitted, readCommit, signature } from "./load.js";
+import { PAGE, readFolder, readStatus, readDetails, readUncommitted, readCommit, signature, lastRead, cachedDetails, keepDetails, forgetDetails } from "./load.js";
 import { unsearched, depthOf, findRepos, readRepo, readRemotes, webUrl, syncOf, pool } from "./repos.js";
 import { perform, openMenu, openDialog, openSettings, showChanges, CHANGED } from "./act.js";
 import { Menu, Dialog, Settings, DEPTH_KEY } from "./overlays.js";
 import { LANE, PAD, commitRow, tint } from "./table.js";
 import { overview } from "./details.js";
 
-const SEEN = 24, DETAILS = 200, SPLIT = { min: 240, max: 0.7, default: 320 }, OVERVIEW_W = 340, SPLIT_LAYOUT = 760;
+const SEEN = 24, SPLIT = { min: 240, max: 0.7, default: 320 }, OVERVIEW_W = 340, SPLIT_LAYOUT = 760;
 const COLS = { date: 44, author: 110, hash: 64 };
 const isRefChange = (p) => /\/(HEAD|packed-refs|FETCH_HEAD|ORIG_HEAD)$|\/refs\//.test(p);
 const inGitDir = (p) => p.includes("/.git/") || p.endsWith("/.git");
@@ -33,6 +33,38 @@ const keep = (map, key, value, max) => { map.delete(key); map.set(key, value); i
 const count = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const load = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const save = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+
+// Whether a layout shows a graph block: not when the block is hidden, or is a stack's other child
+// (the side panel showing Files). -> true, false, or null when the layout has no graph block (a
+// graph in a pane, a window: taken as shown).
+function graphShown(node, shown = true) {
+  if (!node || typeof node !== "object") return null;
+  shown = shown && !node.hidden;
+  if (node.type === "block") return node.content?.props?.view === "graph" ? shown : null;
+  let any = null;
+  const active = node.type === "stack" ? node.active ?? node.children?.[0]?.id : null;
+  for (const child of node.children ?? []) {
+    const r = graphShown(child, shown && (active === null || child.id === active));
+    if (r === true) return true;
+    if (r === false) any = false;
+  }
+  for (const child of node.floating ?? []) {
+    const r = graphShown(child, shown);
+    if (r === true) return true;
+    if (r === false) any = false;
+  }
+  return any;
+}
+
+// The folders git ignores (target/, node_modules/), lowercased, relative to the top: a build
+// writing there changes nothing the graph shows, so the folder watch skips those paths. Only the
+// folders an ignore rule names ("!! target/"): ls-files --directory also lists a folder whose files
+// all happen to be ignored (logs/ holding only *.log), and a new file there would go unseen.
+async function ignoredDirs(root) {
+  const r = await gitRead(["status", "--porcelain=v1", "-z", "--no-renames", "--ignored=matching", "--untracked-files=normal"], root, { timeout: 10000 }).catch(() => null);
+  if (!r || r.code !== 0) return new Set();
+  return new Set(r.stdout.split("\0").filter((e) => e.startsWith("!! ") && e.endsWith("/")).slice(0, 5000).map((e) => e.slice(3).toLowerCase()));
+}
 
 function tilde(path, on) {
   const h = slash(home?.() ?? "");
@@ -50,6 +82,11 @@ const folderState = () => ({
 
 export default class GraphView extends View {
   init(p, cx) {
+    // `new GraphView(props)` already runs init (gpui-kit's View constructor, with the running call's
+    // context), and lib/inline.js calls it again: a second run would double every timer, task and
+    // the first read.
+    if (this.started) return;
+    this.started = true;
     this.p = p ?? {};
     const role = this.p.role ?? props()?.role;
     if (role) {
@@ -67,7 +104,7 @@ export default class GraphView extends View {
     this.all = load("graph.scope") !== "head";
     this.remotes = load("graph.remotes") !== "off";
     this.split = Number(load("graph.split")) || SPLIT.default;
-    this.seen = new Map(); this.cache = new Map(); this.watchToken = 0; this.seenChange = shared(CHANGED);
+    this.seen = new Map(); this.watchToken = 0; this.seenChange = shared(CHANGED);
     this.find = null; this.ticks = 0;
     this.findState = InputState.new({ placeholder: "Find a commit, author, hash or ref" });
     this.findState.on("change", (_e, cx) => { this.setQuery(this.findState.value(), cx); });
@@ -76,6 +113,12 @@ export default class GraphView extends View {
     // Callbacks the shared components call without a cx (Diff's onOpenFile, Preview's onOpen) post
     // here; this task runs them with its own cx.
     this.inbox = [];
+    // The reads, tasks and timers start with the first draw (render reads the place then), so a
+    // copy that is made but never drawn costs nothing.
+  }
+
+  // The copy's own tasks and timers; render starts them the first time it draws.
+  begin(cx) {
     cx.spawn(async (cx) => {
       for (;;) {
         await new Promise((resolve) => { this.wake = resolve; });
@@ -83,13 +126,39 @@ export default class GraphView extends View {
         cx.notify();
       }
     });
-    this.refresh(cx);
     // A cheap check of the refs (local and remote): a commit, checkout or fetch from a terminal
     // shows even when the folder watch misses it. Remote spaces can't be watched at all.
     cx.timer.every(5000, (cx) => this.poll(cx));
     // A nested view isn't drawn again when Herdr's live data changes (focus, spaces), so the place
     // is checked here: plain JS reads, no process, and a redraw only when the focus moved folders.
-    cx.timer.every(600, (cx) => { if (!this.folder && this.key() !== this.context) { this.refresh(cx); cx.notify(); } });
+    // A hidden copy skips it: showing it again draws it, and render checks the place.
+    cx.timer.every(600, (cx) => { if (!this.folder && this.key() !== this.context && !this.hidden()) { this.refresh(cx); cx.notify(); } });
+  }
+
+  // A copy stays alive while its block is hidden (the panel closed, or showing Files): it reads
+  // nothing then and notes what it missed; render catches up when it shows again.
+  hidden() {
+    if (this.folder || this.isFull()) return false;
+    let shown = null;
+    try {
+      shown = graphShown(layout());
+      // A mod pane in the shown tab may be a graph too (panes don't say their props): taken as shown.
+      if (shown === false) { const tab = focused()?.tab; if (panes().some((p) => p.mod && p.tab === tab)) shown = true; }
+    } catch {}
+    return shown === false;
+  }
+  miss(what) {
+    const rank = { poll: 1, status: 2, full: 3 };
+    if ((rank[what] ?? 0) > (rank[this.missed] ?? 0)) this.missed = what;
+  }
+  catchUp(cx) {
+    const missed = this.missed;
+    if (!missed || this.hidden()) return;
+    this.missed = null;
+    if (missed === "full") this.refresh(cx, true);
+    else if (this.state === "workspace") this.rescan(cx);
+    else if (missed === "status") this.refresh(cx, false);
+    else this.poll(cx, true);
   }
 
   update(p) { this.p = p ?? {}; }
@@ -137,12 +206,24 @@ export default class GraphView extends View {
     const id = this.loadSeq = (this.loadSeq ?? 0) + 1;
     this.loading = { key: loadKey, id }; this.again = null;
     const stale = () => this.loadSeq !== id || this.key() !== context;
+    // Another copy (the panel, for full mode) read this folder already: show that at once, then read again.
+    const known = this.state === "loading" && !this.root ? lastRead(opened ?? cwd, on, { all, remotes }) : null;
+    let changed = false;
     cx.spawn(async (cx) => {
       try {
-        if (full || !this.root) {
-          const read = await readFolder(opened ?? cwd, on, { all, remotes, limit });
+        // (A task starts inside the call that spawned it, maybe a render, where the Diff can't be made.)
+        if (known) await cx.sleep(0);
+        if (known && !stale()) {
+          Object.assign(this, known);
+          if (!opened) this.workspace = null;
+          if (!on) this.watch(known.root, context, cx);
+          this.build(cx); changed = true; cx.notify();
+        }
+        if (full || !this.root || known) {
+          const read = await readFolder(opened ?? cwd, on, { all, remotes, limit: known ? this.limit : limit });
           if (stale()) return;
           if (read.state === "norepo") {
+            changed = true;
             if (opened) { this.state = "error"; this.error = `${tilde(opened, on)} isn't a git repository any more.`; return; }
             await this.scan(cwd, on, stale, cx); return;
           }
@@ -157,12 +238,15 @@ export default class GraphView extends View {
           if (stale() || sameFiles(files, this.files)) return;
           this.files = files;
         }
-        this.build(cx);
+        this.build(cx); changed = true;
       } catch (e) {
-        if (!stale()) { this.state = "error"; this.error = String(e?.message ?? e); }
+        if (!stale()) { this.state = "error"; this.error = String(e?.message ?? e); changed = true; }
       } finally {
         if (this.loading?.id === id) {
-          this.loading = null; cx.notify();
+          this.loading = null;
+          // A read that found nothing new doesn't redraw (a redraw draws the whole window), unless
+          // the table showed that it was loading more.
+          if (changed || this.moreShown) { this.moreShown = false; cx.notify(); }
           if (this.again) this.refresh(cx, this.again === "full");
         }
       }
@@ -171,12 +255,13 @@ export default class GraphView extends View {
 
   // Every 5 s: watched folders check their refs every 15 s (the watch sees most changes), the
   // others (remote, unwatchable) every time; the Manygit list every 15 s.
-  poll(cx) {
+  poll(cx, now = false) {
     if (this.loading || this.checking) return;
-    const tick = ++this.ticks % 3 === 0;
-    if (this.state === "workspace") { if (tick) this.rescan(cx); return; }
+    const tick = now || ++this.ticks % 3 === 0;
+    if (this.state === "workspace") { if (tick) { if (this.hidden()) this.miss("poll"); else this.rescan(cx); } return; }
     if (!this.root || (this.state !== "ready" && this.state !== "empty")) return;
     if (this.watching && !this.on && !tick) return;
+    if (!now && this.hidden()) { this.miss("poll"); return; }
     this.checking = true;
     const context = this.key(), root = this.root, on = this.on;
     cx.spawn(async (cx) => {
@@ -277,7 +362,7 @@ export default class GraphView extends View {
     if (this.selected && !this.index.has(this.selected)) this.selected = null;
     if (this.shown) {
       const now = this.commits[this.index.get(this.shown.hash)];
-      if (now) { this.shown = now; if (now.uncommitted) { this.cache.delete(this.uncommittedKey()); this.loadDetails(now, cx); this.syncDiff(cx, true); } }
+      if (now) { this.shown = now; if (now.uncommitted) { forgetDetails(this.uncommittedKey()); this.loadDetails(now, cx); this.syncDiff(cx, true); } }
       else if (this.shown.uncommitted) this.closeDetails();
     }
     if (this.startRev) {
@@ -297,15 +382,30 @@ export default class GraphView extends View {
   watch(root, context, cx) {
     if (this.watching === root) return;
     this.watching = root;
-    const token = this.watchToken;
+    const token = this.watchToken, top = `${root}/`.toLowerCase();
+    let ignored = new Set(), ignoredAt = 0;
+    const readIgnored = () => { ignoredAt = Date.now(); ignoredDirs(root).then((dirs) => { if (token === this.watchToken) ignored = dirs; }); };
+    readIgnored();
+    // In a folder git ignores (a build's output)?
+    const isIgnored = (p) => {
+      if (!ignored.size || !p.toLowerCase().startsWith(top)) return false;
+      const rel = p.slice(top.length).toLowerCase();
+      for (let i = rel.indexOf("/"); i >= 0; i = rel.indexOf("/", i + 1)) if (ignored.has(rel.slice(0, i + 1))) return true;
+      return false;
+    };
     const loop = (dir, gitDir) => cx.spawn(async (cx) => {
       try {
         while (token === this.watchToken) {
-          // Windows reports backslashes; the ref checks read slashes.
-          const paths = (await watchFolder(dir)).map((p) => slash(p));
+          // Windows reports backslashes (some with a \\?\ prefix); the checks read plain slashes.
+          const paths = (await watchFolder(dir)).map((p) => slash(p).replace(/^\/\/\?\//, ""));
           if (token !== this.watchToken) return;
-          if (paths.some((p) => (gitDir || inGitDir(p)) && isRefChange(p))) this.refresh(cx, true);
-          else if (paths.some((p) => !gitDir && (!inGitDir(p) || /\/index$/.test(p)))) this.statusSoon(cx);
+          const refs = paths.some((p) => (gitDir || inGitDir(p)) && isRefChange(p));
+          // In .git, only this checkout's index (staging); not another worktree's (.git/worktrees/*/index).
+          const files = !refs && paths.some((p) => !gitDir && (inGitDir(p) ? p.toLowerCase() === `${top}.git/index` : !isIgnored(p)));
+          // A folder ignored since (the first build) shows up as plain changes: read the list again now and then.
+          if (files && Date.now() - ignoredAt > 60000) readIgnored();
+          if (refs) { if (this.hidden()) this.miss("full"); else this.refresh(cx, true); }
+          else if (files) { if (this.hidden()) this.miss("status"); else this.statusSoon(cx); }
         }
       } catch { if (token === this.watchToken) this.watching = null; }
     });
@@ -340,12 +440,12 @@ export default class GraphView extends View {
 
   // ---- selection and details
 
-  select(hash, cx, { open = false, scroll = false } = {}) {
+  select(hash, cx, { open = false, scroll = false, settle = false } = {}) {
     const c = this.commits[this.index.get(hash)];
     if (!c) return;
     this.selected = hash;
     if (scroll) this.scroll.scroll_to_item(this.index.get(hash), "center");
-    if (this.p.wide || open) this.show(c, cx);
+    if (this.p.wide || open) this.show(c, cx, settle);
     if (open && !this.p.wide) this.page = "commit";
   }
 
@@ -354,14 +454,23 @@ export default class GraphView extends View {
     if (!this.commits.length) return;
     const i = this.index.get(this.selected) ?? (step > 0 ? -1 : this.commits.length);
     const j = Math.max(0, Math.min(this.commits.length - 1, i + step));
-    this.select(this.commits[j].hash, cx, { scroll: true });
+    this.select(this.commits[j].hash, cx, { scroll: true, settle: true });
     if (j >= this.commits.length - 5) this.loadMore(cx);
   }
 
-  show(commit, cx) {
+  // settle: the arrows pass over commits: the header shows at once (it's in the table), the files
+  // and the diff once the selection rests a moment, so holding an arrow doesn't start git per row.
+  show(commit, cx, settle = false) {
     const changed = this.shown?.hash !== commit.hash;
     this.shown = commit;
     if (changed) { this.file = null; if (this.tab === "file") this.tab = this.p.wide ? "diff" : "overview"; }
+    if (settle && changed) {
+      const seq = this.settling = this.settleSeq = (this.settleSeq ?? 0) + 1;
+      // By hash: a status read meanwhile rebuilds the table and replaces the commit object.
+      cx.timer.after(140, (cx) => { if (this.settling === seq && this.shown?.hash === commit.hash) { this.loadDetails(this.shown, cx); this.syncDiff(cx); cx.notify(); } });
+      return;
+    }
+    this.settling = null;
     this.loadDetails(commit, cx);
     this.syncDiff(cx);
   }
@@ -370,21 +479,19 @@ export default class GraphView extends View {
 
   uncommittedKey() { return `${this.on}\0${this.root}\0*${this.files.map((f) => f.status + f.path).join("\0")}`; }
   detailsKey(commit) { return commit.uncommitted ? this.uncommittedKey() : `${this.on}\0${this.root}\0${commit.hash}`; }
-  detailsFor(commit) { return this.cache.get(this.detailsKey(commit)); }
+  detailsFor(commit) { return cachedDetails(this.detailsKey(commit)); }
   laneOf(hash) { return this.rows[this.index.get(hash)]?.lane ?? 0; }
 
   loadDetails(commit, cx) {
     const key = this.detailsKey(commit);
-    if (this.cache.has(key) || this.loadingDetails === key) return;
+    if (cachedDetails(key) || this.loadingDetails === key) return;
     this.loadingDetails = key;
     const root = this.root, on = this.on, files = this.files, head = this.head;
     cx.spawn(async (cx) => {
-      let d;
-      try { d = commit.uncommitted ? await readUncommitted(root, on, files, head) : await readDetails(root, on, commit.hash); }
-      catch (e) { d = { error: String(e?.message ?? e), files: [], more: 0 }; }
+      await keepDetails(key, () => (commit.uncommitted ? readUncommitted(root, on, files, head) : readDetails(root, on, commit.hash)));
       if (this.loadingDetails === key) this.loadingDetails = null;
-      keep(this.cache, key, d, DETAILS);
-      cx.notify();
+      // Only the commit on screen needs a redraw (the arrows pass over many).
+      if (this.shown && this.detailsKey(this.shown) === key) cx.notify();
     });
   }
 
@@ -587,7 +694,7 @@ export default class GraphView extends View {
     if (this.state === "ready") actions.push(iconButton(t, "graph-find", "search", (_e, cx) => (this.find ? this.closeFind(cx) : this.openFind(cx)), { on: Boolean(this.find) }));
     if (ready && this.remoteNames?.length > 0) actions.push(iconButton(t, "graph-fetch", "fetch", (_e, cx) => this.fetch(cx), { on: Boolean(this.fetching), disabled: Boolean(this.fetching) }));
     if (this.state === "workspace") actions.push(iconButton(t, "graph-fetch-all", "fetch", (_e, cx) => this.fetchEvery(cx), { on: Boolean(this.fetchAll), disabled: Boolean(this.fetchAll) }));
-    if (this.state !== "nofolder") actions.push(iconButton(t, "graph-refresh", "rotate-cw", (_e, cx) => { this.cache.clear(); this.refresh(cx); if (this.state === "workspace") this.rescan(cx); cx.notify(); }));
+    if (this.state !== "nofolder") actions.push(iconButton(t, "graph-refresh", "rotate-cw", (_e, cx) => { forgetDetails(); this.refresh(cx); if (this.state === "workspace") this.rescan(cx); cx.notify(); }));
     if (this.state === "workspace" || (this.state === "norepo" && !this.skipped)) actions.push(iconButton(t, "graph-settings", "settings", () => openSettings()));
     actions.push(this.expandButton(t));
     const subtitle = this.state === "workspace" ? `${count(ws.repos.length, "repo")}${this.fetchAll ? ` · fetching ${this.fetchAll.done}/${this.fetchAll.total}` : ""}`
@@ -647,7 +754,7 @@ export default class GraphView extends View {
             out.push(c ? commitRow(c, this.rows[i], t, { width, h, mono, labels: this.labels.get(c.hash), selected: this.selected === c.hash,
               match: Boolean(matches?.has(c.hash)), wide, cols: COLS })
               : h_flex().id("graph-more").h(h).flex_none().px(14).gap(6).items_center().text_size(SIZE.small).text_color(t.accent).hover((s) => s.bg(t.hover))
-                .child(this.loading ? "Loading more commits…" : `Load ${PAGE} more commits`));
+                .child(this.loading ? (this.moreShown = true, "Loading more commits…") : `Load ${PAGE} more commits`));
           }
           return out;
         }).track_scroll(this.scroll)
@@ -727,7 +834,9 @@ export default class GraphView extends View {
 
   render(cx) {
     if (this.part) return this.part.render(cx);
+    if (!this.begun) { this.begun = true; cx.spawn(async (cx) => this.begin(cx)); }
     if (this.key() !== this.context) this.refresh(cx);
+    if (this.missed) this.catchUp(cx);
     // After an action (here, a menu or a dialog) every copy reads again.
     const changed = shared(CHANGED);
     if (changed !== this.seenChange) { this.seenChange = changed; if (this.root || this.state === "workspace") this.refresh(cx); }
