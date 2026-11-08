@@ -3166,6 +3166,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
 
         // Track the y-position of the cursor row for positioning the first line suffix
         let mut cursor_row_y = None;
+        let mut hint_anchor: Option<Point<Pixels>> = None;
 
         for (line, &buffer_line) in prepaint
             .last_layout
@@ -3193,6 +3194,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
 
             if Some(row) == prepaint.current_row {
                 cursor_row_y = Some(line_y);
+                // HERDR: where the cursor row's note goes: after its last visual line.
+                let n = line.wrapped_lines.len().max(1);
+                let indent = if n > 1 { line.wrap_indent } else { px(0.) };
+                let width = line.wrapped_lines.last().map(|l| l.width).unwrap_or_default() + indent;
+                hint_anchor = Some(point(p.x + width, line_y + line_height * (n - 1) as f32));
             }
 
             // After the cursor row, paint ghost lines (which shifts subsequent content down)
@@ -3223,6 +3229,28 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     );
                     offset_y += line_height;
                 }
+            }
+        }
+
+        // HERDR: the cursor row's note (set_line_hints), dimmed and italic after its text.
+        if let (Some(anchor), Some(row)) = (hint_anchor, prepaint.current_row) {
+            let hint = self.state.read(cx).line_hints.as_ref().and_then(|h| h.get(row).cloned());
+            if let Some(text) = hint.filter(|t| !t.is_empty()) {
+                let text_style = window.text_style();
+                let font_size = text_style.font_size.to_pixels(window.rem_size());
+                let mut font = text_style.font();
+                font.style = gpui::FontStyle::Italic;
+                let run = TextRun {
+                    len: text.len(),
+                    font,
+                    color: editor_style.foreground.opacity(0.42),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window.text_system().shape_line(text, font_size, &[run], None);
+                let at = point(anchor.x + font_size * 2.5, anchor.y);
+                _ = shaped.paint(at, line_height, TextAlign::Left, None, window, cx);
             }
         }
 

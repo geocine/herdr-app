@@ -9,7 +9,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView, Scrollbar, InputState, Input } from "gpui-base";
 import { theme, settings, watchFolder, exec, readTextFile, writeTextFile } from "herdr";
-import { SIZE, iconButton, textButton, empty, ui } from "../ui.js";
+import { SIZE, iconButton, textButton, empty, ui, ago } from "../ui.js";
 import { iconFor } from "../icons.js";
 import { slash, dirName, baseName } from "../where.js";
 import * as lang from "./lang.js";
@@ -18,6 +18,7 @@ import { segment, splitQuotes, splitPictures } from "./markdown.js";
 import * as git from "./marks.js";
 import { Mermaid, cacheKey, config as mermaidConfig } from "./mermaid.js";
 import { occurrences, positions, markMatches, syntaxMask, headings, section } from "./find.js";
+import * as blm from "./blame.js";
 import { Zoom, zoomKey, ZOOM_CONTEXT, ZOOM_ESCAPE } from "./zoom.js";
 
 const FONT = 12;             // code at 100 %
@@ -33,7 +34,9 @@ const MAX_EDITORS = 300;     // fences past this stay in the prose, uncolored
 const MAX_DIAGRAM_W = 640;   // diagram width cap at 100 %
 const COL_W = 860;           // reading column cap at 100 %; scales with the zoom
 const LEVELS = [0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
-const ZOOM_KEY = "preview.zoom", WRAP_KEY = "preview.wrap";
+const ZOOM_KEY = "preview.zoom", WRAP_KEY = "preview.wrap", BLAME_KEY = "preview.blame";
+const BLAME_W = 210;         // the blame column (full mode)
+const BLAME_DELAY = 150;     // ms after the file shows before git blame starts
 const DEBOUNCE = 200, MAX_WAIT = 1000;   // live reload: agents write in bursts
 const POLL = 2500, MARKS_EVERY = 4000;
 const FULL_MAX = 1000;       // code files up to this many rows get the line gutter; longer ones, the ruler only
@@ -132,6 +135,10 @@ export default class Preview extends View {
     this.textZoom = LEVELS.includes(z) ? z : 1;
     this.codeFont = Math.round(FONT * this.textZoom);
     this.wrap = localStorage.getItem(WRAP_KEY) === "1";
+    this.blameCol = localStorage.getItem(BLAME_KEY) !== "0";   // the blame column in full mode
+    this.blame = null;    // { rows, commits } of the file on disk (blame.js), null until known
+    this.blameKey = null; // what this.blame was read for: { doc, st }
+    this.blameHints = null;
     this.blocks = [];     // Markdown: [{ kind: "md", text } | { kind: "code", info, text, state } | { kind: "mmd", ... }]
     this.code = null;     // EditorState of a code file
     this.codeLater = false;  // this.code is plain for now; colors come with the next coloring step
@@ -206,6 +213,7 @@ export default class Preview extends View {
       this.release();
       this.doc = null; this.marks = null; this.codeMarks = null; this.stamp = null; this.note = null; this.loadedAt = null;
       this.inRepo = undefined; this.lastStatus = undefined;
+      this.blame = this.blameHints = this.blameKey = this.blameRuns = null;
       if (this.zoomView) { this.zoomView.closed = true; this.zoomView = null; }
       if (this.ds) this.closeFind(false);
       this.dropEdit(cx, false);
@@ -424,6 +432,7 @@ export default class Preview extends View {
     const state = EditorState.new({ readonly: true, font_family: settings().font_family, font_size: this.codeFont, syntax: syntax(theme()),
       ...(language ? { language } : {}), soft_wrap: this.wrapOn(), value: this.doc?.text ?? "" });
     this.findInCode(state);
+    if (this.blameHints && this.doc?.kind === "text") state.set_line_hints(this.blameHints);
     return state;
   }
 
@@ -497,6 +506,7 @@ export default class Preview extends View {
         this.lastStatus = st; this.marksDoc = doc;
         if (m !== this.marks) { this.setMarks(m); cx.notify(); }
       }
+      if (this.gen === gen && this.doc === doc && st !== undefined) this.queueBlame(cx, st);
       if (this.markAgain) { this.markAgain = false; this.refreshMarks(cx); }
     });
   }
@@ -525,6 +535,54 @@ export default class Preview extends View {
       this.headSeen = s;
       if (before !== undefined && s !== before) this.refreshMarks(cx);
     });
+  }
+
+  /**
+   * git blame of the file, in the background once it shows and its marks are known: again only when
+   * the text or its git status changes (an edit, a commit). Never holds the view up.
+   */
+  queueBlame(cx, st) {
+    const doc = this.doc, p = this.p, abs = this.abs(), gen = this.gen;
+    const key = String(st ?? "");
+    if (!doc || (doc.kind !== "text" && doc.kind !== "markdown") || p.rev || !abs) return;
+    if (this.blameKey?.doc === doc && this.blameKey.st === key) return;
+    if (st === null || (doc.lines ?? 0) > blm.BLAME_MAX_LINES) { this.blameKey = { doc, st: key }; this.setBlame(null); return; }
+    if (this.blaming) { this.blameAgain = true; return; }
+    this.blaming = true;
+    cx.spawn(async (cx) => {
+      let b = null;
+      try {
+        await cx.sleep(BLAME_DELAY);
+        if (this.gen !== gen || this.doc !== doc) return;
+        b = await blm.blame(dirName(abs), baseName(abs), p.on);
+      } catch { b = null; } finally { this.blaming = false; }
+      if (this.gen === gen && this.doc === doc) {
+        this.blameKey = { doc, st: key };
+        this.setBlame(b);
+        cx.notify();
+      }
+      if (this.blameAgain) { this.blameAgain = false; if (this.gen === gen && this.lastStatus !== undefined) this.queueBlame(cx, this.lastStatus); }
+    });
+  }
+
+  setBlame(b) {
+    this.blame = b;
+    this.blameRuns = null;
+    this.blameHints = b ? blm.hints(b) : null;
+    this.applyHints();
+  }
+
+  /** The cursor line's blame note in the Editors (an edited, unsaved text has none: its rows moved). */
+  applyHints() {
+    const h = this.blameHints;
+    if (this.code) this.code.set_line_hints(this.doc?.kind === "text" ? h : null);
+    if (this.edit?.state) this.edit.state.set_line_hints(this.edit.dirty ? null : h);
+  }
+
+  toggleBlame(cx) {
+    this.blameCol = !this.blameCol;
+    try { localStorage.setItem(BLAME_KEY, this.blameCol ? "1" : "0"); } catch {}
+    cx.notify();
   }
 
   setMarks(m) {
@@ -783,6 +841,7 @@ export default class Preview extends View {
     const state = EditorState.new({ readonly: false, font_family: settings().font_family, font_size: this.codeFont, syntax: syntax(theme()),
       ...(language ? { language } : {}), soft_wrap: this.wrapOn() || this.doc?.kind === "markdown", value, line_numbers: true });
     state.on("change", (_e, cx) => { if (this.edit === e) this.setDirty(state.value() !== e.base, cx); });
+    if (this.blameHints && !e.dirty) state.set_line_hints(this.blameHints);
     return state;
   }
 
@@ -824,6 +883,7 @@ export default class Preview extends View {
     const e = this.edit;
     if (!e || e.dirty === d) return;
     e.dirty = d;
+    e.state?.set_line_hints(d ? null : this.blameHints);
     if (d && this.note === "Saved") this.note = null;
     this.p.onDirty?.(d, cx);
     cx.notify();
@@ -1049,6 +1109,7 @@ export default class Preview extends View {
       .child(div().flex_1())
       .children(this.editButtons(t))
       .when(this.findable(), (el) => el.child(iconButton(t, "pv-find", "search", (_e, cx) => this.openFind(cx), { on: Boolean(this.ds) })))
+      .when(this.p.wide && doc?.kind === "text" && Boolean(this.blame), (el) => el.child(iconButton(t, "pv-blame", "history", (_e, cx) => this.toggleBlame(cx), { on: this.blameCol })))
       .when(doc?.kind === "text", (el) => el.child(iconButton(t, "pv-wrap", "wrap-text", (_e, cx) => this.toggleWrap(cx), { on: this.wrapOn(), disabled: lang.wraps(lang.forPath(p.path)) })))
       .when(Boolean(doc) && doc.kind !== "binary" && doc.kind !== "missing" && doc.kind !== "error", (el) => el
         .child(iconButton(t, "pv-zoom-out", "zoom-out", (_e, cx) => this.textAct("out", cx), { disabled: this.textZoom === LEVELS[0] }))
@@ -1242,9 +1303,12 @@ export default class Preview extends View {
   // ---- code -----------------------------------------------------------------------------
 
   /** "full" (gutter of changed lines, outer scroll) or "plain" (the Editor scrolls itself; ruler only). */
+  /** Full mode's blame column: on, known, and the file short enough for the full layout. */
+  blameShown() { return this.p.wide && this.blameCol && Boolean(this.blame) && this.doc?.kind === "text" && (this.doc.lines ?? 0) <= FULL_MAX && !this.wrapOn(); }
+
   codeLayout() {
     // While finding, the Editor scrolls itself: it can scroll to a match (an outer box can't).
-    if (!this.codeMarks || !this.doc || this.wrapOn() || this.ds) return "plain";
+    if ((!this.codeMarks && !this.blameShown()) || !this.doc || this.wrapOn() || this.ds) return "plain";
     return this.doc.lines <= FULL_MAX ? "full" : "plain";
   }
 
@@ -1264,9 +1328,11 @@ export default class Preview extends View {
       const lh = lineHeight(this.codeFont), text = this.doc.lines * lh, slack = Math.max(text, 3 * lh);
       body = div().id(`pv-code:${this.p.path}`).flex_1().min_w(0).h_full().overflow_y_scrollbar()
         .child(h_flex().w_full().h(text + 8).flex_none().pt(4).items_start()
+          .when(this.blameShown(), (el) => el.child(this.blameColumn(t, lh, text)))
           .child(div().w(GUTTER).h(text).flex_none().relative()
-            .children(m.runs.map((r) => div().absolute().left(4).w(3).top((r.from - 1) * lh).h(r.n * lh).rounded(1).bg(r.kind === "a" ? t.ansi2 : t.ansi4)))
-            .children(m.dels.map((n) => div().absolute().left(2).w(7).h(3).rounded(1).top(Math.max(0, Math.min(text - 3, n * lh - 1.5))).bg(t.ansi1))))
+            .when(Boolean(m), (e) => e
+              .children(m.runs.map((r) => div().absolute().left(4).w(3).top((r.from - 1) * lh).h(r.n * lh).rounded(1).bg(r.kind === "a" ? t.ansi2 : t.ansi4)))
+              .children(m.dels.map((n) => div().absolute().left(2).w(7).h(3).rounded(1).top(Math.max(0, Math.min(text - 3, n * lh - 1.5))).bg(t.ansi1)))))
           .child(div().flex_1().min_w(0).h(text).overflow_hidden().relative()
             .child(div().w_full().h(text + slack).flex_none().child(editor))
             .when(Boolean(hits), (e) => e.children(this.lineMarks(hits.map((h) => h.line - 1), lh, t, cur - 1)))));
@@ -1280,6 +1346,35 @@ export default class Preview extends View {
           .children(m.rulerDels.map((n) => at(div().absolute().left(2).w(RULER - 5).h(2).rounded(1).bg(t.ansi1), n, 0))))
         .when(Boolean(hits), (e) => e.children(this.rulerHits(rows).map((r) => at(div().absolute().right(0).w(r === cur - 1 ? RULER - 1 : 4).h(pct(1))
           .min_h(r === cur - 1 ? 3 : 2).bg(r === cur - 1 ? t.foreground : t.accent), r, 1))))));
+  }
+
+  /**
+   * Full mode's blame column: one block per run of lines from the same commit (who, when), a
+   * bar on its left brighter the newer it is. Runs are worked out once per blame.
+   */
+  blameColumn(t, lh, text) {
+    const b = this.blame;
+    if (this.blameRuns?.blame !== b) {
+      const now = Date.now(), times = b.commits.map((c) => c.time).filter(Boolean);
+      const oldest = times.length ? Math.min(...times) : now, span = Math.max(1, now - oldest);
+      this.blameRuns = {
+        blame: b,
+        list: blm.runs(b).filter((r) => r.c >= 0).map((r) => {
+          const c = b.commits[r.c];
+          const fresh = c.uncommitted ? 1 : 1 - (now - c.time) / span;
+          const who = c.uncommitted ? "You" : c.mine ? "You" : c.author || "Unknown";
+          return { from: r.from, n: r.n, label: who, when: c.uncommitted ? "now" : ago(c.time, now),
+            summary: c.summary, alpha: Math.round(40 + 215 * Math.max(0, Math.min(1, fresh))).toString(16).padStart(2, "0") };
+        }),
+      };
+    }
+    const size = Math.max(10, Math.round(this.codeFont * 0.82));
+    return div().w(BLAME_W).h(text).flex_none().relative().border_r(1).border_color(t.border).bg(t.chrome)
+      .children(this.blameRuns.list.map((r) => h_flex().absolute().left(0).right(0).top(r.from * lh).h(r.n * lh).items_start().border_t(1).border_color(t.border)
+        .child(div().w(2).h_full().flex_none().bg(tint(t.accent, r.alpha) ?? t.accent))
+        .child(h_flex().flex_1().min_w(0).h(lh).px(6).gap(6).items_center().text_size(size)
+          .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(r.summary ? `${r.label} \u00b7 ${r.summary}` : r.label))
+          .child(div().flex_none().text_color(t.dim).child(r.when)))));
   }
 
   /** The find hits' rows (from 0) for the ruler, merged to RULER_MAX; kept until the hits or the current one change. */

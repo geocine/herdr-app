@@ -435,6 +435,8 @@ pub struct InputBaseState<M: InputModeKind> {
     /// [`InputBaseState::search_activation_revision`].
     pub(super) search_activation_revision: u64,
     pub(super) searchable: bool,
+    /// HERDR: a note per buffer row (blame, say); the cursor row's is drawn dimmed after its text.
+    pub(super) line_hints: Option<std::rc::Rc<Vec<SharedString>>>,
     pub(super) replaceable: bool,
     pub(super) soft_wrap: bool,
     pub(super) wrapping_indent: WrappingIndent,
@@ -810,6 +812,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             search_session: super::SearchSession::default(),
             search_activation_revision: 0,
             searchable: false,
+            line_hints: None,
             replaceable: true,
             soft_wrap: true,
             wrapping_indent: WrappingIndent::default(),

@@ -581,6 +581,19 @@ pub fn install(ctx: &Ctx<'_>, module: &Object<'_>, runtime: Weak<ShellRuntime>) 
         ),
     )?;
 
+    let hint_editor = runtime.clone();
+    globals.set(
+        "__editor_set_line_hints",
+        Func::from(
+            move |ctx: Ctx<'_>, handle: EntityHandle, hints: Vec<String>| -> JsResult<()> {
+                let state = live_editor(&ctx, &hint_editor, handle)?;
+                let hints = (!hints.is_empty()).then(|| hints.into_iter().map(gpui::SharedString::from).collect());
+                scope::with_current(|_window, cx| state.update(cx, |state, cx| state.set_line_hints(hints, cx)))
+                    .ok_or_else(|| needs_call(&ctx, "set_line_hints()"))
+            },
+        ),
+    )?;
+
     let unsearch_editor = runtime.clone();
     globals.set(
         "__editor_search_close",

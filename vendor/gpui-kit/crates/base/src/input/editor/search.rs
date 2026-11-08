@@ -188,6 +188,14 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx.notify();
     }
 
+    /// HERDR: one note per buffer row (index = row); the cursor row's note is
+    /// drawn dimmed after the end of its line, the way GitLens shows blame.
+    /// `None` (or an empty list) removes them.
+    pub fn set_line_hints(&mut self, hints: Option<Vec<gpui::SharedString>>, cx: &mut Context<Self>) {
+        self.line_hints = hints.filter(|h| !h.is_empty()).map(std::rc::Rc::new);
+        cx.notify();
+    }
+
     /// The row (from 0) of every match of the current query, in match order:
     /// what a custom search UI needs for its count and an overview ruler.
     pub fn search_match_rows(&mut self) -> Vec<usize> {
