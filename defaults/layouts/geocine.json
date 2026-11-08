@@ -1,10 +1,6 @@
 {
   "id": "root",
   "type": "row",
-  "theme": {
-    "light": "geocine-light",
-    "dark": "geocine-dark"
-  },
   "preview": "layouts/geocine.svg",
   "titlebar": "none",
   "traffic_lights": [
