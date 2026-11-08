@@ -86,4 +86,6 @@ For the fork owner. Needs `gh`, and both repos on the `geocine` branch.
 scripts/fork-release.ps1 -Publish
 ```
 
+One release a day: publishing again the same day replaces that day's release and its tag.
+
 Build from source: see the [original README](https://github.com/herdrdev/herdr-app/blob/master/README.md#build-from-source).
