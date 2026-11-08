@@ -27,11 +27,15 @@ $ProgressPreference = "SilentlyContinue"
 function Fail($why) { throw "herdr: $why" }
 
 $repo = "geocine/herdr-app"
+# Each file's API address, by name: the way in when github.com's download links fail.
+$assets = @{}
 $from = if ($env:HERDR_FORK_URL) { $env:HERDR_FORK_URL.TrimEnd("/") } else {
     # One release for all files: GitHub caches each file's `latest` redirect
     # on its own, so right after a release they can point at different ones.
-    $tag = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers @{ "User-Agent" = "herdr-fork-installer" }).tag_name
+    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers @{ "User-Agent" = "herdr-fork-installer" }
+    $tag = $release.tag_name
     if (-not $tag) { Fail "no release of $repo found" }
+    foreach ($a in $release.assets) { $assets[$a.name] = $a.url }
     Write-Host "Release $tag"
     "https://github.com/$repo/releases/download/$tag"
 }
@@ -76,7 +80,11 @@ New-Item -ItemType Directory -Force $tmp | Out-Null
 try {
     Write-Host "Downloading Herdr (geocine fork)..."
     foreach ($f in "SHA256SUMS", $appFile, $coreFile) {
-        curl.exe -fsSL "$from/$f" -o "$tmp\$f"
+        curl.exe -fsL "$from/$f" -o "$tmp\$f"
+        # github.com's download links sometimes fail (504) while the API serves the same file.
+        if ($LASTEXITCODE -and $assets[$f]) {
+            curl.exe -fsSL -H "Accept: application/octet-stream" -H "User-Agent: herdr-fork-installer" $assets[$f] -o "$tmp\$f"
+        }
         if ($LASTEXITCODE) { Fail "cannot download $from/$f" }
     }
     $sums = @{}
