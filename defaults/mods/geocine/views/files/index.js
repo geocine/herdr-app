@@ -430,6 +430,8 @@ export default class FilesView extends View {
       on: this.on, root: this.root, path: this.file, rev: null, repoTop: this.git.repo ? slash(this.git.top) : null, wide: this.wide,
       // A relative link in the preview (a markdown link to another file).
       onOpen: (rel, _rev, cx) => this.followLink(rel, cx),
+      // While the preview edits, typed keys are the editor's, not the tree's shortcuts.
+      onEditing: (on) => { this.editing = on; },
     };
   }
 
@@ -560,6 +562,7 @@ export default class FilesView extends View {
   }
 
   key(e, cx) {
+    if (this.editing) return;
     const k = e.key, m = e.modifiers ?? {};
     if (this.menu) {
       const menu = this.menu, n = menu.items.length;

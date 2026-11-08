@@ -627,6 +627,8 @@ export default class Preview extends View {
     this.edit.state = this.editState(d.text);
     this.source = true;
     if (this.ds) this.closeFind(false);
+    // The host stops taking the keyboard and its shortcuts while the editor types.
+    this.p.onEditing?.(true, cx);
     cx.notify();
   }
 
@@ -644,6 +646,7 @@ export default class Preview extends View {
     if (!e) return;
     this.edit = null;
     this.ask = null;
+    this.p.onEditing?.(false, cx);
     e.state.release();
     if (e.dirty) this.p.onDirty?.(false, cx);
     if (restore && this.doc !== e.doc && e.doc) { this.doc = e.doc; this.build(cx); this.diagrams(cx); this.pictures(this.gen, cx); }
@@ -838,7 +841,8 @@ export default class Preview extends View {
       .track_focus(this.focus).key_context(DOC_CONTEXT).on_action(FIND_OPEN, (_e, cx) => this.openFind(cx))
       .on_action(SAVE, (_e, cx) => { if (this.edit) this.save(cx); }).on_action(EDIT, (_e, cx) => this.toggleEdit(cx))
       .on_key_down((e, cx) => this.onKey(e, cx))
-      .on_mouse_down("left", () => { if (!this.ds) this.focus.focus(); })
+      // A press in the editor bubbles here: leave the keyboard with the editor then.
+      .on_mouse_down("left", () => { if (!this.ds && !this.editing()) this.focus.focus(); })
       .on_size_change((size, cx) => { const w = Math.round(size.width); if (w !== this.width) { this.width = w; cx.notify(); } });
     if (this.zoomView) return root.child(this.zoomView.render(t, this.zoomFocus, {
       onKey: (e, cx) => this.zoomKeyDown(e, cx),
