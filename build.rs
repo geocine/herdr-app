@@ -19,6 +19,12 @@ fn walk(dir: &Path, base: &Path, root: &Path, out: &mut Vec<String>) {
     let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()).collect();
     entries.sort();
     for p in entries {
+        // `herdr-app check` writes editor helpers beside the mod it checks; hidden
+        // files are caches. Neither ships.
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if name.starts_with('.') || name == "gpui-kit.d.ts" || name == "jsconfig.json" {
+            continue;
+        }
         if p.is_dir() {
             walk(&p, base, root, out);
         } else {
