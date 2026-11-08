@@ -3209,6 +3209,16 @@ const BASE: &str = r#"  /** A row. */
     set_selected_range(range: InputRange): void;
     /** Replaces the selection with `text`, as typing would (one undo step). */
     replace(text: string): void;
+    /**
+     * HERDR: finds `query` (ASCII case-insensitive) and highlights every match in
+     * the text, without the editor's own search panel. Answers each match's row
+     * (from 0), in order. An empty query ends the search.
+     */
+    search(query: string): number[];
+    /** HERDR: makes match `index` (into `search`'s answer) the current one and scrolls the editor to it. */
+    search_go(index: number): boolean;
+    /** HERDR: ends the search: the highlights go. */
+    search_close(): void;
     on(event: "change" | "submit" | "focus" | "blur" | "paste_other", handler: (event: InputEvent, cx: Context) => void): boolean;
     /** Moves the keyboard onto the editor. */
     focus(): void;
@@ -3232,7 +3242,8 @@ const BASE: &str = r#"  /** A row. */
       soft_wrap?: boolean;
       /** Semantic colors: keyword, string, comment, function, type, number,
        * constant, variable, operator, punctuation, boolean, string.escape.
-       * Values are concrete hex colors; unspecified UI colors follow the theme. */
+       * Values are concrete hex colors; unspecified UI colors follow the theme.
+       * HERDR: `selection` sets the selection and find highlight color (#rrggbbaa). */
       syntax?: Record<string, string>;
     }) => EditorState;
   };

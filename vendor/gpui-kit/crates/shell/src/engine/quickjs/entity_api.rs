@@ -455,10 +455,16 @@ pub fn install(ctx: &Ctx<'_>, module: &Object<'_>, runtime: Weak<ShellRuntime>) 
                         .map_err(|error| Exception::throw_type(&ctx, &error.to_string()))?;
                     colors.insert(name.clone(), color);
                 }
-                let style = gpui_base::input::InputEditorStyle {
+                // HERDR: `selection` in the colors is the editor's selection (and find
+                // highlight) colour, not a syntax style: translucent keeps the text readable.
+                let selection = colors.remove("selection");
+                let mut style = gpui_base::input::InputEditorStyle {
                     highlight_styles: std::sync::Arc::new(crate::syntax::SyntaxStyles(colors)),
                     ..Default::default()
                 };
+                if let Some(selection) = selection {
+                    style.selection = selection.into();
+                }
                 let store = alive(&ctx, &create_editor)?;
                 scope::with_current(|window, cx| {
                     store
@@ -534,6 +540,55 @@ pub fn install(ctx: &Ctx<'_>, module: &Object<'_>, runtime: Weak<ShellRuntime>) 
         Func::from(
             move |ctx: Ctx<'_>, handle: EntityHandle, value: String| -> JsResult<()> {
                 write_value(&ctx, &live_editor(&ctx, &write_editor, handle)?, value)
+            },
+        ),
+    )?;
+
+    // HERDR: a host find bar drives the editor's own search: highlights in the
+    // text, the current match revealed by the editor's scroll.
+    let search_editor = runtime.clone();
+    globals.set(
+        "__editor_search",
+        Func::from(
+            move |ctx: Ctx<'_>, handle: EntityHandle, query: String| -> JsResult<Vec<u32>> {
+                let state = live_editor(&ctx, &search_editor, handle)?;
+                scope::with_current(|_window, cx| {
+                    state.update(cx, |state, cx| {
+                        if query.is_empty() {
+                            state.close_search(cx);
+                            return Vec::new();
+                        }
+                        state.set_search_query(query, true, cx);
+                        state.search_match_rows().into_iter().map(|row| row as u32).collect()
+                    })
+                })
+                .ok_or_else(|| needs_call(&ctx, "search()"))
+            },
+        ),
+    )?;
+
+    let reveal_editor = runtime.clone();
+    globals.set(
+        "__editor_search_go",
+        Func::from(
+            move |ctx: Ctx<'_>, handle: EntityHandle, ix: u32| -> JsResult<bool> {
+                let state = live_editor(&ctx, &reveal_editor, handle)?;
+                scope::with_current(|_window, cx| {
+                    state.update(cx, |state, cx| state.reveal_search_match(ix as usize, cx).is_some())
+                })
+                .ok_or_else(|| needs_call(&ctx, "search_go()"))
+            },
+        ),
+    )?;
+
+    let unsearch_editor = runtime.clone();
+    globals.set(
+        "__editor_search_close",
+        Func::from(
+            move |ctx: Ctx<'_>, handle: EntityHandle| -> JsResult<()> {
+                let state = live_editor(&ctx, &unsearch_editor, handle)?;
+                scope::with_current(|_window, cx| state.update(cx, |state, cx| state.close_search(cx)))
+                    .ok_or_else(|| needs_call(&ctx, "search_close()"))
             },
         ),
     )?;

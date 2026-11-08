@@ -188,6 +188,37 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx.notify();
     }
 
+    /// The row (from 0) of every match of the current query, in match order:
+    /// what a custom search UI needs for its count and an overview ruler.
+    pub fn search_match_rows(&mut self) -> Vec<usize> {
+        self.sync_search_matcher();
+        self.search_session
+            .matcher
+            .matched_ranges()
+            .iter()
+            .map(|range| self.text.offset_to_point(range.start).row)
+            .collect()
+    }
+
+    /// Make match `ix` (an index into the matches, clamped) the current one and
+    /// scroll it into view, the way next/previous do.
+    pub fn reveal_search_match(&mut self, ix: usize, cx: &mut Context<Self>) -> Option<Range<usize>> {
+        self.sync_search_matcher();
+        if self.search_session.matcher.is_empty() {
+            return None;
+        }
+        self.search_session.matcher.set_current_match_index(ix);
+        let range = self
+            .search_session
+            .matcher
+            .matched_ranges()
+            .get(self.search_session.matcher.current_match_index())
+            .cloned()?;
+        self.scroll_to_with_padding(range.end, None, ScrollPadding::SurroundingLines, cx);
+        cx.notify();
+        Some(range)
+    }
+
     pub fn next_search_match(&mut self, cx: &mut Context<Self>) -> Option<Range<usize>> {
         self.sync_search_matcher();
         let range = self.search_session.matcher.next()?;
