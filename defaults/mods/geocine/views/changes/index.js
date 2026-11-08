@@ -154,7 +154,9 @@ export default class ChangesView extends View {
 
   previewProps() {
     if (!this.repo || !this.previewAt) return null;
-    return { on: this.on, root: this.repo.top, path: this.previewAt.path, rev: this.previewAt.rev, repoTop: this.repo.top, wide: this.wide };
+    return { on: this.on, root: this.repo.top, path: this.previewAt.path, rev: this.previewAt.rev, repoTop: this.repo.top, wide: this.wide,
+      // While the preview edits, typed keys and clicks are the editor's.
+      onEditing: (on) => { this.editing = on; } };
   }
 
   // Mounts or updates the Diff and the Preview: from handlers and tasks only, never render.
@@ -212,6 +214,7 @@ export default class ChangesView extends View {
   }
 
   key(e, cx) {
+    if (this.editing) return;
     const k = e.key;
     if (this.confirm) {
       if (k === "escape") { this.confirm = null; cx.stop_propagation(); cx.notify(); }
@@ -486,7 +489,7 @@ export default class ChangesView extends View {
     const t = theme();
     const root = (body) => div().id("changes-root").size_full().min_w(0).min_h(0).relative().flex().flex_col()
       .track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
-      .on_mouse_down("left", (_e, cx) => { if (this.typing) { this.typing = false; cx.notify(); } this.handle.focus(); })
+      .on_mouse_down("left", (_e, cx) => { if (this.typing) { this.typing = false; cx.notify(); } if (!this.editing) this.handle.focus(); })
       .child(body)
       .when(Boolean(this.confirm), el => el.child(this.confirmView(t)));
     const top = header(t, { icon: "changes", title: "Changes", subtitle: this.subtitle(), actions: this.headerActions(t) });
