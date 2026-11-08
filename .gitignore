@@ -2,3 +2,7 @@
 /dist
 /.brain
 /AGENTS.local.md
+
+# herdr-app check writes these beside the mods it checks
+defaults/**/gpui-kit.d.ts
+defaults/**/jsconfig.json
