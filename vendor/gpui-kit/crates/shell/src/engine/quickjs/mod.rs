@@ -7096,6 +7096,9 @@ globalThis.__gpui = (() => {
           __handle: handle,
           value: () => __editor_value(handle),
           set_value: (value) => __editor_set_value(handle, String(value)),
+          search: (query) => __editor_search(handle, String(query ?? "")),
+          search_go: (index) => __editor_search_go(handle, Math.max(0, Math.floor(Number(index) || 0))),
+          search_close: () => __editor_search_close(handle),
           on: (event, handler) => __editor_on(handle, String(event), handler),
           release: () => __editor_release(handle),
         };

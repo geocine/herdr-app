@@ -19,7 +19,7 @@ import { layoutLanes } from "./lanes.js";
 import { UNCOMMITTED, LABEL, withUncommitted, labelsOf, hitLabel } from "./ops.js";
 import { PAGE, readFolder, readStatus, readDetails, readUncommitted, readCommit, signature, lastRead, cachedDetails, keepDetails, forgetDetails } from "./load.js";
 import { unsearched, depthOf, findRepos, readRepo, readRemotes, webUrl, syncOf, pool } from "./repos.js";
-import { perform, openMenu, openDialog, openSettings, showChanges, CHANGED } from "./act.js";
+import { perform, openMenu, openSettings, showChanges, CHANGED } from "./act.js";
 import { Menu, Dialog, Settings, DEPTH_KEY } from "./overlays.js";
 import { LANE, PAD, commitRow, tint } from "./table.js";
 import { overview } from "./details.js";
@@ -611,28 +611,17 @@ export default class GraphView extends View {
     return this.listWidth() - SIZE.pad - trailing - LABEL.GAP;
   }
 
-  // A left press, then on release the list names the row: together, a click on a label.
+  // A left press, then on release the list names the row: together, a click on it.
   clicked(key, cx) {
-    const press = this.press; this.press = null;
+    this.press = null;
     this.handle.focus();
     if (key === "more") return this.loadMore(cx);
     const commit = this.commits[this.index.get(key)];
     if (!commit) return;
-    const hit = commit.uncommitted ? null : hitLabel(this.labels.get(key), press?.x ?? -1, this.graphWidth(), this.labelLimit());
-    if (press?.count >= 2 && hit) { this.checkout(hit.part, cx); return; }
-    // On a label, a click only selects (a second one checks it out); elsewhere it opens the commit.
-    this.select(commit.hash, cx, { open: !hit });
+    // Anywhere on the row, labels too, a click opens the commit. A double-click never checks a
+    // branch out: that is the right-click menu's Checkout, on purpose only.
+    this.select(commit.hash, cx, { open: true });
     cx.notify();
-  }
-
-  checkout(part, cx) {
-    const ctx = this.ctx;
-    if (part.kind === "branch" && part.name !== ctx.current) cx.spawn(async () => { await perform({ type: "checkout", name: part.name }, {}, ctx); });
-    else if (part.kind === "remote") {
-      const branch = part.name.slice(part.name.indexOf("/") + 1);
-      if (ctx.branches.includes(branch)) { if (branch !== ctx.current) cx.spawn(async () => { await perform({ type: "checkout", name: branch }, {}, ctx); }); }
-      else openDialog({ type: "checkoutRemote", name: part.name, remote: part.name.slice(0, part.name.indexOf("/")), branch }, ctx);
-    }
   }
 
   contextMenu(key, e) {

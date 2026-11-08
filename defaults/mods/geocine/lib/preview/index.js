@@ -79,8 +79,11 @@ const rowCount = (text) => { let n = 1; for (let i = text.indexOf("\n"); i >= 0;
 const isAbs = (p) => /^([a-z]:)?\//i.test(p);
 
 function syntax(t) {
+  // selection: the Editor's selection and find highlights; translucent so the text shows through.
+  const selection = tint(t.accent, "59");
   return { keyword: t.ansi5, string: t.ansi2, "string.escape": t.ansi6, comment: t.dim, function: t.ansi4, type: t.ansi3,
-    number: t.ansi9 ?? t.ansi1, boolean: t.ansi6, constant: t.ansi6, operator: t.muted, punctuation: t.muted };
+    number: t.ansi9 ?? t.ansi1, boolean: t.ansi6, constant: t.ansi6, operator: t.muted, punctuation: t.muted,
+    ...(selection ? { selection } : {}) };
 }
 
 function norm(p) {
@@ -418,8 +421,26 @@ export default class Preview extends View {
 
   codeState(color = true) {
     const language = color ? lang.forPath(this.p.path) : null;
-    return EditorState.new({ readonly: true, font_family: settings().font_family, font_size: this.codeFont, syntax: syntax(theme()),
+    const state = EditorState.new({ readonly: true, font_family: settings().font_family, font_size: this.codeFont, syntax: syntax(theme()),
       ...(language ? { language } : {}), soft_wrap: this.wrapOn(), value: this.doc?.text ?? "" });
+    this.findInCode(state);
+    return state;
+  }
+
+  /**
+   * A code file's find runs in its Editor: the matches are highlighted in the text and the
+   * current one is scrolled to (the Editor scrolls itself while finding, see codeLayout).
+   * Again on every new state (colors, zoom, wrap) and every load.
+   */
+  findInCode(state = this.code) {
+    const ds = this.ds;
+    if (!state || this.doc?.kind !== "text") return;
+    if (!ds?.query) { if (ds) { ds.hits = []; ds.total = 0; } state.search(""); return; }
+    const rows = state.search(ds.query);
+    ds.hits = rows.map((r) => ({ line: r + 1 }));
+    ds.total = rows.length;
+    ds.at = Math.max(0, Math.min(rows.length - 1, ds.at));
+    if (rows.length) state.search_go(ds.at);
   }
 
   /** wrapAs: the fence's language for soft wrap, when it's drawn plain for now. */
@@ -668,6 +689,7 @@ export default class Preview extends View {
     if (!ds) return;
     this.ds = null;
     for (const b of this.blocks) b.find = null;
+    this.code?.search_close();
     ds.input.release();
     if (focus) this.focus.focus();
   }
@@ -679,6 +701,7 @@ export default class Preview extends View {
     if (!ds) return;
     ds.hits = []; ds.total = 0; ds.blocks = 0;
     const q = ds.query.toLowerCase();
+    if (doc?.kind === "text" && this.code) { this.findInCode(); return; }
     if (!q || !doc) return;
     if (doc.kind === "text") {
       const o = occurrences(doc.text, q);
@@ -713,6 +736,7 @@ export default class Preview extends View {
     this.current(false);
     ds.at = (ds.at + d + n) % n;
     this.current(true);
+    if (this.doc?.kind === "text") this.code?.search_go(ds.at);
   }
 
   /** A prose block's Markdown with its matches in <mark>, cached on b.find. */
@@ -1219,7 +1243,8 @@ export default class Preview extends View {
 
   /** "full" (gutter of changed lines, outer scroll) or "plain" (the Editor scrolls itself; ruler only). */
   codeLayout() {
-    if (!this.codeMarks || !this.doc || this.wrapOn()) return "plain";
+    // While finding, the Editor scrolls itself: it can scroll to a match (an outer box can't).
+    if (!this.codeMarks || !this.doc || this.wrapOn() || this.ds) return "plain";
     return this.doc.lines <= FULL_MAX ? "full" : "plain";
   }
 
