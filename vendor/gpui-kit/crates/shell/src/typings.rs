@@ -3295,6 +3295,16 @@ const BASE: &str = r#"  /** A row. */
     set_selected_range(range: InputRange): void;
     /** Replaces the selection with `text`, as typing would (one undo step). */
     replace(text: string): void;
+    /**
+     * HERDR: finds `query` (ASCII case-insensitive) and highlights every match in
+     * the text, without the editor's own search panel. Answers each match's row
+     * (from 0), in order. An empty query ends the search.
+     */
+    search(query: string): number[];
+    /** HERDR: makes match `index` (into `search`'s answer) the current one and scrolls the editor to it. */
+    search_go(index: number): boolean;
+    /** HERDR: ends the search: the highlights go. */
+    search_close(): void;
     on(event: "change" | "submit" | "focus" | "blur" | "paste_other", handler: (event: InputEvent, cx: Context) => void): boolean;
     /** Changes the indent once the file's style is known. `hard_tabs` defaults to false. */
     set_tab_size(tab_size: number, hard_tabs?: boolean): void;
@@ -3339,7 +3349,8 @@ const BASE: &str = r#"  /** A row. */
        * Headings and strong text are bold. Emphasis is italic and inherits
        * the editor foreground unless given its own color.
        * Values are concrete hex colors. Built-in syntax colors use a dark palette.
-       * Unspecified editor UI colors follow the theme. */
+       * Unspecified editor UI colors follow the theme.
+       * HERDR: `selection` sets the selection and find highlight color (#rrggbbaa). */
       syntax?: Record<string, string>;
     }) => EditorState;
   };

@@ -7339,6 +7339,9 @@ globalThis.__gpui = (() => {
           replace: (text) => __editor_text_call(handle, "replace", [String(text)]),
           value: () => __editor_value(handle),
           set_value: (value) => __editor_set_value(handle, String(value)),
+          search: (query) => __editor_search(handle, String(query ?? "")),
+          search_go: (index) => __editor_search_go(handle, Math.max(0, Math.floor(Number(index) || 0))),
+          search_close: () => __editor_search_close(handle),
           on: (event, handler) => __editor_on(handle, String(event), handler),
           set_tab_size: (tab_size, hard_tabs = false) =>
             __editor_set_tab_size(handle, Number(tab_size), Boolean(hard_tabs)),
