@@ -372,7 +372,7 @@ export default class Welcome extends View {
       .when(id !== null && has(id), (el) => el.child(show(id)));
     return v_flex()
       .gap(14)
-      .child(this.title(t, "Your project, beside your terminals", "The Geocine layout has three panels on the right. The buttons in the tab bar open them, and Ctrl+B hides the sidebar for more room."))
+      .child(this.title(t, "Your project, beside your terminals", "The Geocine layout has three panels on the right. The buttons in the tab bar open them, and Ctrl+B folds the sidebar for more room."))
       .child(item("files", "g-files", "Files", "Your project as a tree, with git colors. Search with /. Click a file to read it: Markdown, code, images. Ctrl+E edits it, Ctrl+S saves."))
       .child(item("changes", "g-changes", "Changes", "What changed, as diffs you can fold and mark as viewed. Stage, unstage, discard, commit."))
       .child(item("graph", "g-git-graph", "Graph", "Every branch and commit. Click a commit for its diff. Right-click to checkout, merge, rebase, tag or push."))

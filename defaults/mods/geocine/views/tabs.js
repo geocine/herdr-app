@@ -3,7 +3,7 @@
 // Settings leaves on) and full mode. The open panel is remembered per space.
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand } from "herdr";
 import { ui } from "../lib/ui.js";
 import { openFull } from "../lib/nav.js";
 
@@ -22,10 +22,30 @@ const PANELS = [
   { id: "graph", label: "Graph", icon: ui("git-graph") },
 ];
 
+// Folds the sidebar to its rail (icons only) or back to the width it had, as the sidebar's own
+// fold button does (workspace-chrome); a hidden sidebar comes back. Ctrl+B: "geocine.sidebar".
+function foldSidebar() {
+  const sidebar = find(layout(), "sidebar");
+  if (!sidebar) return;
+  if (sidebar.hidden) { run("layout.show", { id: "sidebar" }); return; }
+  const width = sidebar.size?.px ?? Infinity, narrow = width < 160;
+  if (!narrow) setShared("sidebar.width", width);
+  setShared("sidebar.collapsed", !narrow);
+  run("layout.resize", { id: "sidebar", px: narrow ? (shared("sidebar.width") ?? 268) : window()?.platform === "macos" ? 76 : 44 });
+}
+
 export default class Tabs extends View {
-  init() {
+  init(_props, cx) {
     this.pressed = null;
     this.panels = JSON.parse(localStorage.getItem("tabs.panels") ?? "{}");
+    // Key commands for the geocine mod ("geocine.<command>" in keys.json) land here.
+    cx?.spawn(async (cx) => {
+      for (;;) {
+        const c = await nextCommand();
+        if (c === "sidebar") foldSidebar();
+        cx.notify();
+      }
+    });
   }
 
   // The side panel is remembered per space: switching shows that space's choice
