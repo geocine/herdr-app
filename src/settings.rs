@@ -97,9 +97,11 @@ fn preset(name: &str) -> Option<&'static Palette> {
 const THEMES: &[(&str, &str)] = &[
     ("atom-one-dark", include_str!("../defaults/themes/atom-one-dark.json")),
     ("win98", include_str!("../defaults/themes/win98.json")),
+    ("geocine-dark", include_str!("../defaults/themes/geocine-dark.json")),
+    ("geocine-light", include_str!("../defaults/themes/geocine-light.json")),
 ];
 #[allow(dead_code)] // Only telemetry.rs used it: off in this fork.
-pub const SHIPPED_THEMES: &[&str] = &["atom-one-dark", "win98"];
+pub const SHIPPED_THEMES: &[&str] = &["atom-one-dark", "win98", "geocine-dark", "geocine-light"];
 
 /// `themes/<name>.json`: a palette, plus `colors` overrides like settings.json's.
 #[derive(Deserialize)]
