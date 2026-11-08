@@ -186,8 +186,9 @@ the title bar, panes as cards, a space picker) and `win98`
 `geocine` and opens it by default (a first start, and once for an install
 that was on `main`; `shared("geocine.default")` records that): main's
 window in Herdr's default look (graphite, paper; the green `geocine-dark` /
-`geocine-light` themes ship as choices), `ctrl-b` toggling the sidebar
-(its `layout:geocine` keys section), and the `geocine` mod drawing the tab bar and the side panel's Files, Changes and Graph
+`geocine-light` themes ship as choices), `ctrl-b` folding the sidebar to
+its rail and back, as its fold button does (`geocine.sidebar`, in the
+`layout:geocine` keys section), and the `geocine` mod drawing the tab bar and the side panel's Files, Changes and Graph
 (`{ "mod": "geocine", "props": { "view": "tabs" | "files" | "changes" | "graph" } }`;
 `view: "full"` is full mode, an overlay with list and detail side by side).
 `mods/geocine/DESIGN.md` describes its parts. Add a layout by
