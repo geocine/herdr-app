@@ -113,7 +113,7 @@ try {
         $older = gh release list --repo $Repo --limit 100 --json tagName -q ".[].tagName" | Where-Object { $_.StartsWith("$day-") -and $_ -ne $tag }
         foreach ($old in $older) {
             Run @("gh", "release", "delete", $old, "--repo", $Repo, "--yes", "--cleanup-tag")
-            git -C $app tag -d $old 2>$null | Out-Null
+            if (git -C $app tag -l $old) { git -C $app tag -d $old | Out-Null }
             Write-Host "Removed $old (one release a day)."
         }
     }
