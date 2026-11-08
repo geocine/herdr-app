@@ -2,11 +2,11 @@
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Scrollbar } from "gpui-base";
-import { spaces, run, theme, props, closeOverlay, setShared, shared, hc, appHome, readTextFile, writeTextFile, settings, layout, keys } from "herdr";
+import { spaces, run, theme, props, closeOverlay, setShared, hc, appHome, readTextFile, writeTextFile, settings, keys, layout } from "herdr";
 
 const I = (name) => `frame/welcome/${name}.svg`;
 const W = (name) => `mods/workspace-chrome/${name}.svg`;
-const PAGES = 4;
+const PAGES = 2;
 const ASK = "Read ~/.config/herdr-app/AGENTS.md, then tell me what you can change in Herdr.";
 const MIGRATE = "Read `herdr-app --skill`, then migrate my keybinds and settings from ~/.config/herdr/config.toml";
 const APPEARANCES = [
@@ -14,26 +14,10 @@ const APPEARANCES = [
   ["light", "Light"],
   ["dark", "Dark"],
 ];
-// The panels the layout offers (its "panel-body" stack), as the tab bar's buttons.
-const PANELS = [
-  { id: "files", icon: "files", title: "Files", about: "The folder you're in as a tree. Open a file to read it, highlighted." },
-  { id: "changes", icon: "git-compare", title: "Changes", about: "What your agents changed: every file with its diff, and a commit box." },
-];
-
 // The key bound to a command, as people press it: "Ctrl+Shift+P".
 function bound(action) {
   const k = keys().find((b) => b.section === "global" && b.action === action);
   return k ? k.keys.split("-").map((p) => (p === "cmd" ? "\u2318" : p.charAt(0).toUpperCase() + p.slice(1))).join("+") : null;
-}
-
-function find(node, id) {
-  if (!node) return null;
-  if (node.id === id) return node;
-  for (const c of node.children ?? []) {
-    const f = find(c, id);
-    if (f) return f;
-  }
-  return null;
 }
 
 export default class Welcome extends View {
@@ -105,25 +89,6 @@ export default class Welcome extends View {
       cx.notify();
     });
     cx.notify();
-  }
-
-  // The panels picked: the tab bar shows a button for each.
-  panels() {
-    return shared("workspace.panels") ?? PANELS.map((p) => p.id);
-  }
-
-  togglePanel(id) {
-    const on = this.panels().includes(id);
-    const next = on ? this.panels().filter((x) => x !== id) : [...this.panels(), id];
-    setShared("workspace.panels", next);
-    const L = layout();
-    if (!find(L, "panel")) return;
-    if (on) {
-      if (find(L, "panel-body")?.active === id || next.length === 0) run("layout.hide", { id: "panel" });
-    } else {
-      run("layout.select", { stack: "panel-body", child: id });
-      run("layout.show", { id: "panel" });
-    }
   }
 
   // Pieces -------------------------------------------------------------
@@ -279,15 +244,44 @@ export default class Welcome extends View {
       .child(this.copyLine(t, MIGRATE, "w-migrate-copy"));
   }
 
+  // This build is the geocine fork: say so, and what it adds.
+  forkCard(t) {
+    const point = (text) => h_flex().gap(8).items_start()
+      .child(svg(I("check")).size(14).mt(2).flex_none().text_color(t.accent))
+      .child(div().flex_1().text_size(13).text_color(t.foreground).child(text));
+    return v_flex()
+      .gap(10)
+      .p(16)
+      .rounded(12)
+      .border_1()
+      .border_color(t.accent)
+      .bg(t.raised)
+      .child(
+        h_flex()
+          .gap(10)
+          .items_center()
+          .child(image("frame/welcome/herdr.png").w(18).h(18).rounded(4).flex_none())
+          .child(div().text_size(13.5).font_semibold().text_color(t.foreground).child("This is the geocine fork of Herdr, made for Windows")),
+      )
+      .child(point("Reboot your PC: your terminals come back, same folder, same screen."))
+      .child(point("Your agents come back to the same chat: Claude Code, Codex, pi, OpenCode, Grok."))
+      .child(point("Many tabs with the same agent? Each tab gets its own chat back."))
+      .child(point("Works well with Git Bash. Herdr follows your folder when you cd."))
+      .child(point("The Geocine layout: Files, Changes and a Git graph beside your terminals. More on the next page."))
+      .child(point("No tracking. Nothing is sent."))
+      .child(div().text_size(12).text_color(t.muted).child("Source and updates: github.com/geocine/herdr-app"));
+  }
+
   // Pages ---------------------------------------------------------------
 
   pageOne(t) {
     return v_flex()
       .gap(18)
-      .child(this.title(t, "Herdr runs your terminals in the background", "The terminals and agents you open here don't live in this window. They run in herdr-core, a small background program on your computer. Close Herdr, update it, or let it crash, and your agents keep working. Open it again and everything is where you left it, as long as the computer is on."))
+      .child(this.title(t, "Herdr runs your terminals in the background", "The terminals and agents you open here don't live in this window. They run in herdr-core, a small background program on your computer. Close Herdr, update it, or let it crash, and your agents keep working. Open it again and everything is where you left it, even after a reboot."))
+      .child(this.forkCard(t))
       .child(this.feature(t, "bot", "Agents tell you when they need you", "A ring while one works, \u201cNeeds you\u201d when it asks something, a sound when it finishes."))
       .child(this.feature(t, "messages", "Agents can start helpers", "They show up under the agent that started them. Click one to watch it."))
-      .child(this.feature(t, "layers", "Your other machines, in the same window", "A server or a Mac mini runs its own herdr-core, so its agents keep going even while this laptop sleeps."))
+      .child(this.otherMachines(t))
       .child(div().h(1).bg(t.border))
       .child(h_flex().gap(10).items_center().child(div().w(84).text_size(13).text_color(t.muted).child("Appearance")).child(this.segment(t, APPEARANCES, this.appearance, (v, cx) => this.setAppearance(v, cx))))
       .child(h_flex().gap(10).items_center().child(div().w(84).text_size(13).text_color(t.muted).child("Size")).child(this.sizeControl(t)))
@@ -308,10 +302,11 @@ export default class Welcome extends View {
       .child(div().w(8).h(8).rounded(4).bg(ok ? t.ansi2 : t.dim));
   }
 
-  pageTwo(t) {
+  // Other machines, on the first page: a server or another PC runs its own herdr-core.
+  otherMachines(t) {
     return v_flex()
-      .gap(18)
-      .child(this.title(t, "Add your other machines", "Pick a host from your ssh config. Herdr connects, installs herdr-core there if it's missing, and lists that machine in the sidebar with its own spaces."))
+      .gap(10)
+      .child(this.feature(t, "layers", "Your other machines, in the same window", "A server or another PC runs its own herdr-core, so its agents keep going even while this one sleeps. Pick a host from your ssh config: Herdr connects, installs herdr-core there if it's missing, and lists it in the sidebar."))
       .child(
         v_flex()
           .rounded(12)
@@ -341,98 +336,56 @@ export default class Welcome extends View {
       .child(this.para(t, "Not now? Add machine is at the bottom of the sidebar too."));
   }
 
-  panelCard(t, p) {
-    const on = this.panels().includes(p.id);
-    return h_flex()
-      .id(`w-panel-${p.id}`)
-      .p(12)
-      .gap(12)
-      .items_start()
+  // The palette key, drawn as keycaps beside what it does.
+  paletteCard(t, pal) {
+    const keys = pal.split("+").filter(Boolean);
+    const cap = (k, i) => div().id(`w-cap-${i}`).min_w(24).h(24).px(7).flex().items_center().justify_center().rounded(6)
+      .bg(t.background).border_1().border_color(t.border).border_b(2)
+      .text_size(12).font_semibold().text_color(t.foreground).child(k);
+    return v_flex()
+      .gap(8)
+      .p(14)
       .rounded(12)
       .border_1()
-      .border_color(on ? t.accent : t.input)
-      .when(on, (el) => el.bg(t.accent + "10"))
-      .cursor_pointer()
-      .hover((s) => s.border_color(on ? t.accent : t.ring))
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click((_e, cx) => {
-        this.togglePanel(p.id);
-        cx.notify();
-      })
-      .child(div().flex_none().w(32).h(32).rounded(9).bg(t.raised).border_1().border_color(t.border).flex().items_center().justify_center().child(svg(W(p.icon)).size(16).text_color(t.foreground)))
-      .child(
-        v_flex()
-          .flex_1()
-          .min_w(0)
-          .gap(4)
-          .child(
-            h_flex()
-              .gap(8)
-              .items_center()
-              .child(div().text_size(13.5).font_semibold().text_color(t.foreground).child(p.title))
-              .child(div().px(6).py(0.5).rounded(5).bg(t.hover).text_size(11).text_color(t.dim).child(`mods/${p.id}`)),
-          )
-          .child(this.para(t, p.about)),
-      )
-      .child(
-        div()
-          .flex_none()
-          .mt(4)
-          .w(34)
-          .h(20)
-          .rounded(10)
-          .p(2)
-          .bg(on ? t.accent : t.input)
-          .flex()
-          .when(on, (el) => el.justify_end())
-          .child(div().w(16).h(16).rounded(8).bg(on ? t.accent_foreground : t.muted)),
-      );
-  }
-
-  pageThree(t) {
-    // The first look at this page asks: nothing is picked yet (skipping the
-    // welcome leaves both on).
-    if (shared("workspace.panels") === undefined || shared("workspace.panels") === null) setShared("workspace.panels", []);
-    return v_flex()
-      .gap(14)
-      .child(this.title(t, "Choose your panels", "Herdr comes with a couple of panels. Turn one on and it appears beside your terminals. Drag this window aside to see it. Later, the buttons in the tab bar open and close them."))
-      .children(PANELS.map((p) => this.panelCard(t, p)))
+      .border_color(t.border)
+      .bg(t.raised)
       .child(
         h_flex()
-          .gap(10)
-          .items_start()
-          .p(12)
-          .rounded(10)
-          .bg(t.raised)
-          .child(this.para(t, "Ask your agent for a board of your agents, your pull requests, a cost meter, or the sidebar on the right. Not sure what's possible? Ask it that too.")),
-      );
+          .gap(12)
+          .items_center()
+          .child(div().flex_1().min_w(0).text_size(13.5).font_semibold().text_color(t.foreground).child("One key opens everything"))
+          .child(h_flex().flex_none().gap(4).items_center().children(keys.map(cap))),
+      )
+      .child(this.para(t, "It opens the command palette: every action, by name, with its key. It works the same in every layout."));
+  }
+
+  // The Geocine layout's panels: what each does, and a way to open them.
+  panels(t) {
+    // Only the panels this layout has (Herdr's main has no Graph).
+    const has = (id) => { const walk = (n) => n?.id === id || (n?.children ?? []).some(walk); return walk(layout()); };
+    const open = (id) => { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); };
+    const show = (id) => h_flex().id(`w-show-${id}`).flex_none().h(24).px(8).items_center().rounded(6).cursor_pointer()
+      .text_size(12).text_color(t.accent).border_1().border_color(t.border).hover((s) => s.bg(t.hover))
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation()).on_click(() => open(id)).child("Show");
+    const item = (id, icon, title, body) => h_flex().gap(12).items_start()
+      .child(div().flex_1().min_w(0).child(this.feature(t, icon, title, body)))
+      .when(id !== null && has(id), (el) => el.child(show(id)));
+    return v_flex()
+      .gap(14)
+      .child(this.title(t, "Your project, beside your terminals", "The Geocine layout has three panels on the right. The buttons in the tab bar open them."))
+      .child(item("files", "g-files", "Files", "Your project as a tree, with git colors. Search with /. Click a file to read it: Markdown, code, images. Ctrl+E edits it, Ctrl+S saves."))
+      .child(item("changes", "g-changes", "Changes", "What changed, as diffs you can fold and mark as viewed. Stage, unstage, discard, commit."))
+      .child(item("graph", "g-git-graph", "Graph", "Every branch and commit. Click a commit for its diff. Right-click to checkout, merge, rebase, tag or push."))
+      .child(item(null, "g-expand", "Full mode", "The expand button opens any panel almost as big as the window, list and detail side by side."))
+      .child(div().h(1).bg(t.border));
   }
 
   pageFour(t) {
     const pal = bound("app.palette");
     return v_flex()
       .gap(16)
-      .when(Boolean(pal), (el) =>
-        el.child(
-          h_flex()
-            .gap(12)
-            .items_center()
-            .p(12)
-            .rounded(10)
-            .border_1()
-            .border_color(t.accent)
-            .bg(t.accent + "10")
-            .child(div().flex_none().px(8).py(3).rounded(6).border_1().border_color(t.border).bg(t.raised).text_size(13).font_semibold().text_color(t.foreground).child(pal))
-            .child(
-              v_flex()
-                .flex_1()
-                .min_w(0)
-                .gap(2)
-                .child(div().text_size(13.5).font_semibold().text_color(t.foreground).child("One key opens everything"))
-                .child(this.para(t, "It opens the command palette, with every action by name and its key. It works the same in every layout.")),
-            ),
-        ),
-      )
+      .child(this.panels(t))
+      .when(Boolean(pal), (el) => el.child(this.paletteCard(t, pal)))
       .child(this.title(t, "Make it yours", "Every part of this window is a layout or a mod: plain files your agent can change or add to. Give it this line to start:"))
       .child(this.copyLine(t, ASK))
       .child(this.para(t, "Then ask for anything: \u201cmove the sidebar to the right\u201d, \u201ca panel with my pull requests\u201d."))
@@ -498,6 +451,7 @@ export default class Welcome extends View {
           .child(image("frame/welcome/herdr.png").w(24).h(24).rounded(6).flex_none())
           .child(div().text_size(14).font_semibold().text_color(t.foreground).child("Welcome to Herdr"))
           .child(div().px(6).py(0.5).rounded(5).border_1().border_color(t.input).text_color(t.muted).text_size(10.5).font_semibold().child("BETA"))
+          .child(div().px(6).py(0.5).rounded(5).border_1().border_color(t.accent).text_color(t.accent).text_size(10.5).font_semibold().child("GEOCINE FORK"))
           .child(div().flex_1())
           .child(div().text_size(11.5).text_color(t.dim).child("Drag to move"))
           .child(
@@ -531,7 +485,7 @@ export default class Welcome extends View {
               .overflow_y_scroll()
               // Padding inside, not on the scroll area: there it counts as
               // content and a page that fits still shows a bar.
-              .child(div().px(22).pt(22).pb(20).child([this.pageOne, this.pageTwo, this.pageThree, this.pageFour][this.page - 1].call(this, t))),
+              .child(div().px(22).pt(22).pb(20).child([this.pageOne, this.pageFour][this.page - 1].call(this, t))),
           )
           .child(Scrollbar.vertical("w-body").mode("always").absolute().inset_0()),
       )
@@ -550,7 +504,7 @@ export default class Welcome extends View {
           .when(this.page > 1, (el) => el.child(this.button(t, "w-back", "Back", false, (_e, cx) => go(this.page - 1, cx))))
           .child(
             this.page < PAGES
-              ? this.button(t, "w-next", this.page === 2 && !this.machines.length ? "Not now" : "Next", true, (_e, cx) => go(this.page + 1, cx), "arrow-right")
+              ? this.button(t, "w-next", "Next", true, (_e, cx) => go(this.page + 1, cx), "arrow-right")
               : this.button(t, "w-start", spaces().length ? "Done" : "Open a space", true, () => this.start(), "arrow-right"),
           ),
       );

@@ -175,7 +175,7 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
                     Some(json!({"code":1,"stdout":"{\"error\":{\"kind\":\"host_key\",\"message\":\"unknown host key\"}}","stderr":""}))
                 }
                 // The files panel lists a folder with sh: kind and name pairs.
-                "exec" if first == "sh" && a.get(1).map(from_host).and_then(|v| v.get(2).cloned()) == Some(json!("files")) => {
+                "exec" if first == "sh" && matches!(a.get(1).map(from_host).and_then(|v| v.get(2).cloned()), Some(v) if v == "files" || v == "geocine-files") => {
                     Some(json!({"code":0,"stdout":"d\u{0}src\u{0}f\u{0}README.md\u{0}","stderr":""}))
                 }
                 "exec"
@@ -190,6 +190,10 @@ fn module(values: BTreeMap<String, Value>, calls: Rc<RefCell<Calls>>) -> HostMod
                         ]
                         .contains(&a.get(1).map(from_host).unwrap_or(Value::Null)) =>
                 {
+                    Some(json!({"code":128,"stdout":"","stderr":"fixture: not a git repository"}))
+                }
+                // The geocine views read git with its no-lock flags first: the fixture isn't a repo.
+                "exec" if first == "git" && a.get(1).map(from_host).and_then(|v| v.get(0).cloned()) == Some(json!("--no-optional-locks")) => {
                     Some(json!({"code":128,"stdout":"","stderr":"fixture: not a git repository"}))
                 }
                 _ => None,
@@ -922,7 +926,7 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
     cx.update(gpui_shell::init);
     let start = Instant::now();
     let staged = Staged::new();
-    for page in 1..=4 {
+    for page in 1..=2 {
         let tree = describe(
             cx,
             &staged,
@@ -933,8 +937,15 @@ fn local_state_and_overlay_initial_descriptions(cx: &mut TestAppContext) {
             Some(&format!("this.page = {page};")),
         )
         .unwrap();
-        let expected = ["Herdr runs your terminals in the background", "Add your other machines", "Choose your panels", "Make it yours"][page - 1];
-        assert!(tree.contains(expected), "welcome page {page}: {tree}");
+        // This fork's welcome: the fork and other machines first, then its panels and the rest.
+        let expected: &[&str] = [
+            &["Herdr runs your terminals in the background", "This is the geocine fork of Herdr", "Add a machine"][..],
+            &["Your project, beside your terminals", "Make it yours"][..],
+        ][page - 1];
+        for text in expected {
+            assert!(tree.contains(text), "welcome page {page} lacks {text:?}: {tree}");
+        }
+        assert!(!tree.contains("Choose your panels"));
     }
     // This fork sends no feedback: the window only says so, with no form to fill.
     let tree = describe(cx, &staged, "frame/feedback", true, props(), updates("current", "current"), None).unwrap();
