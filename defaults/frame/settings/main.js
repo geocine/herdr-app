@@ -15,17 +15,18 @@ const SECTIONS = [
   { id: "privacy", title: "Privacy", icon: "shield" },
 ];
 
-const LOOKS = { main: "Herdr", terminals: "Terminals", win98: "Herdr 98" };
+const LOOKS = { geocine: "Geocine", main: "Herdr", terminals: "Terminals", win98: "Herdr 98" };
 const APPEARANCES = [
   [null, "System"],
   ["light", "Light"],
   ["dark", "Dark"],
 ];
 
-// The panels the main layout offers (its "panel-body" stack), as the welcome shows them.
+// The panels the layouts offer (their "panel-body" stack). Graph is the Geocine layout's.
 const PANELS = [
   { id: "files", title: "Files", about: "The folder you're in as a tree. Open a file to read it, highlighted." },
   { id: "changes", title: "Changes", about: "What your agents changed: every file with its diff, and a commit box." },
+  { id: "graph", title: "Graph", about: "Every branch and commit as a graph, with each commit's diff. In the Geocine layout." },
 ];
 
 function find(node, id) {
@@ -507,16 +508,20 @@ export default class Settings extends View {
 
   // The panels picked (shared "workspace.panels", as the welcome sets it):
   // the tab bar shows a button for each.
+  // A panel added after the list was picked (Graph) counts as on until it's turned off.
   panels() {
-    return shared("workspace.panels") ?? PANELS.map((p) => p.id);
+    const picked = shared("workspace.panels"), known = shared("workspace.panels.known") ?? ["files", "changes"];
+    return Array.isArray(picked) ? PANELS.map((p) => p.id).filter((id) => picked.includes(id) || !known.includes(id)) : PANELS.map((p) => p.id);
   }
 
   togglePanel(id) {
     const on = this.panels().includes(id);
     const next = on ? this.panels().filter((x) => x !== id) : [...this.panels(), id];
     setShared("workspace.panels", next);
+    setShared("workspace.panels.known", PANELS.map((p) => p.id));
     const L = layout();
-    if (!find(L, "panel")) return;
+    // This layout may not have it (Graph in Herdr's main).
+    if (!find(L, "panel") || !find(L, id)) return;
     if (on) {
       if (find(L, "panel-body")?.active === id || next.length === 0) run("layout.hide", { id: "panel" });
     } else {
