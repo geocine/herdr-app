@@ -7342,6 +7342,7 @@ globalThis.__gpui = (() => {
           search: (query) => __editor_search(handle, String(query ?? "")),
           search_go: (index) => __editor_search_go(handle, Math.max(0, Math.floor(Number(index) || 0))),
           search_close: () => __editor_search_close(handle),
+          set_line_hints: (hints) => __editor_set_line_hints(handle, Array.isArray(hints) ? hints.map((h) => String(h ?? "")) : []),
           on: (event, handler) => __editor_on(handle, String(event), handler),
           set_tab_size: (tab_size, hard_tabs = false) =>
             __editor_set_tab_size(handle, Number(tab_size), Boolean(hard_tabs)),
