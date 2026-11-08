@@ -1,8 +1,13 @@
 // Reading a repository for the graph: one round of git calls for the table, a cheap checksum of
 // the refs for polling, and one commit's details. Every call is a lib/git.js read (no locks, no
 // index refresh), so the folder watch never wakes for our own reads.
+// Module state is shared by every copy of the mod (the panel, full mode): the folders last seen
+// outside a repository, the last table read of each folder, and commits' details: full mode opens on what the
+// panel already read. Only finished reads are shared, never a promise: a copy that closes takes
+// its unfinished tasks with it, and another copy waiting on one of them would wait forever.
 // After rabeeh-ta/herdr-git-graph `graph.js` (MIT) and file-preview `commits.js` (MIT). See NOTICE.md.
 import { gitRead } from "../../lib/git.js";
+import { slash } from "../../lib/where.js";
 import { STATUS_ARGS, logArgs, parseLog, parseStatus, nameStatus, numstat, objectId } from "./ops.js";
 
 export const PAGE = 300;
@@ -15,43 +20,90 @@ export function checksum(text) {
 }
 
 const REFS = ["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags", "refs/remotes"];
+// HEAD and its branch, read the same way by the table and by the checksum: if they differ, the
+// checksum never matches the table's and every check reloads the whole table. The table asks for
+// the repository's top in the same call as HEAD (TOP_HEAD prints the top, then HEAD's hash), so
+// it is read fresh every time at no extra process.
+const HEAD = ["rev-parse", "--verify", "-q", "HEAD"], CURRENT = ["symbolic-ref", "-q", "--short", "HEAD"];
+const TOP_HEAD = ["rev-parse", "--show-toplevel", "--verify", "-q", "HEAD"];
 
 /** The refs' checksum: changes with any commit, checkout, branch, tag or fetch. null when unreadable. */
 export async function signature(top, on) {
-  const [head, sym, refs] = await Promise.all([
-    gitRead(["rev-parse", "-q", "--verify", "HEAD"], top, { on }), gitRead(["symbolic-ref", "-q", "HEAD"], top, { on }), gitRead(REFS, top, { on })]);
+  const [head, current, refs] = await Promise.all([gitRead(HEAD, top, { on }), gitRead(CURRENT, top, { on }), gitRead(REFS, top, { on })]);
   if (refs.code !== 0) return null;
-  return checksum([head.stdout, sym.stdout, refs.stdout].join("\0"));
+  return checksum([head.code === 0 ? head.stdout.trim() : "", current.stdout, refs.stdout].join("\0"));
 }
 
 const lines = (s) => s.split(/\r?\n/).filter(Boolean);
 
+// ---- shared by every copy
+
+const outside = new Map();     // "on\0folder" -> true: last seen outside a repository
+const reads = new Map();       // "on\0folder\0scope" -> the last table read, shown at once by a new copy
+const details = new Map();     // "on\0root\0hash" -> a commit's details
+const bounded = (map, key, value, max) => { map.delete(key); map.set(key, value); if (map.size > max) map.delete(map.keys().next().value); };
+const readKey = (cwd, on, all, remotes) => `${on ?? ""}\0${cwd}\0${all} ${remotes}`;
+
+/** The last table read of a folder in this scope, by any copy, or null. */
+export const lastRead = (cwd, on, { all, remotes }) => reads.get(readKey(cwd, on, all, remotes)) ?? null;
+
+/** A commit's details if any copy has read them. */
+export const cachedDetails = (key) => details.get(key);
+/** Reads a commit's details and keeps them for every copy; errors become { error }. */
+export async function keepDetails(key, read) {
+  const d = await read().catch((e) => ({ error: String(e?.message ?? e), files: [], more: 0 }));
+  bounded(details, key, d, 200);
+  return d;
+}
+/** Drops one commit's details, or all of them (the refresh button). */
+export function forgetDetails(key) { if (key === undefined) details.clear(); else details.delete(key); }
+
 /**
  * Everything the table shows for a folder, in one round of git calls (each answers from any subfolder;
  * status names paths from the repository top). -> { state: "norepo" } | the folder's state.
+ * The result is kept for new copies (lastRead).
  */
 export async function readFolder(cwd, on, { all, remotes, limit }) {
-  const top = await gitRead(["rev-parse", "--show-toplevel"], cwd, { on });
-  if (top.code !== 0) return { state: "norepo", cwd, on };
-  const root = top.stdout.trim().replace(/\\/g, "/");
-  const git = (args) => gitRead(args, root, { on });
-  const upstream = all ? null : await git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).then((r) => (r.code === 0 ? r.stdout.trim() : null));
-  const [log, head, current, branches, remoteNames, status, refs] = await Promise.all([
+  const read = await readFolderNow(cwd, on, { all, remotes, limit });
+  if (read.state !== "norepo") bounded(reads, readKey(cwd, on, all, remotes), read, 16);
+  return read;
+}
+
+async function readFolderNow(cwd, on, { all, remotes, limit }) {
+  const where = `${on ?? ""}\0${cwd}`, git = (args) => gitRead(args, cwd, { on });
+  const topOf = (r) => slash(r.stdout.split(/\r?\n/)[0].trim());
+  // A folder last seen outside a repository is asked that first: one call, not a round of failures.
+  if (outside.has(where)) {
+    if (!topOf(await git(TOP_HEAD))) return { state: "norepo", cwd, on };
+    outside.delete(where);
+  }
+  // All at once, run from the folder itself (git finds the repository from any subfolder; status
+  // names paths from its top): the top comes with HEAD, so a folder that became (or stopped
+  // being) a repository of its own is seen on the next read.
+  const upstreamRead = all ? Promise.resolve(null)
+    : git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).then((r) => (r.code === 0 ? r.stdout.trim() : null));
+  const [topHead, upstream, log, current, remoteNames, status, refs] = await Promise.all([
+    git(TOP_HEAD), upstreamRead,
     // One commit past the page says whether there are more, as Git Graph asks.
-    git(logArgs({ all, remotes, upstream, limit: limit + 1 })),
-    git(["rev-parse", "--verify", "-q", "HEAD"]), git(["symbolic-ref", "-q", "--short", "HEAD"]),
-    git(["for-each-ref", "--format=%(refname)", "refs/heads"]), git(["remote"]), git(STATUS_ARGS), git(REFS)]);
+    upstreamRead.then((upstream) => git(logArgs({ all, remotes, upstream, limit: limit + 1 }))),
+    git(CURRENT), git(["remote"]), git(STATUS_ARGS), git(REFS)]);
+  // Not a repository: no top (a repository with no commits yet has a top and no HEAD).
+  const root = topOf(topHead);
+  if (!root) { bounded(outside, where, true, 256); return { state: "norepo", cwd, on }; }
+  const headId = topHead.code === 0 ? (topHead.stdout.split(/\r?\n/)[1] ?? "").trim() || null : null;
   // A log that fails without a HEAD is a repository with no commits yet.
-  if (log.code !== 0 && head.code === 0) throw new Error(log.stderr.trim() || "git log failed");
+  if (log.code !== 0 && headId) throw new Error(log.stderr.trim() || "git log failed");
   const base = log.code === 0 ? parseLog(log.stdout) : [];
+  // The local branches, from the refs already read (by name, as for-each-ref lists them).
+  const branches = lines(refs.stdout).map((l) => l.slice(l.indexOf(" ") + 1)).filter((r) => r.startsWith("refs/heads/"));
   return {
     root, on, cwd, base: base.slice(0, limit), limit, hasMore: base.length > limit,
-    head: head.code === 0 ? head.stdout.trim() : null, current: current.code === 0 ? current.stdout.trim() : null,
-    branches: lines(branches.stdout).map((r) => r.replace(/^refs\/heads\//, "")),
+    head: headId, current: current.code === 0 ? current.stdout.trim() : null,
+    branches: branches.map((r) => r.slice("refs/heads/".length)),
     remoteNames: lines(remoteNames.stdout), upstream,
     files: status.code === 0 ? parseStatus(status.stdout) : [],
-    sig: checksum([head.stdout, current.stdout, refs.stdout].join("\0")),
-    signature: [log.stdout, head.stdout, current.stdout, branches.stdout, remoteNames.stdout].join("\0"), scope: `${all} ${remotes}`,
+    sig: checksum([headId ?? "", current.stdout, refs.stdout].join("\0")),
+    signature: [log.stdout, headId ?? "", current.stdout, branches.join("\n"), remoteNames.stdout].join("\0"), scope: `${all} ${remotes}`,
   };
 }
 

@@ -6,9 +6,15 @@ import ICONS from "./icon-table.js";
 const path = (id) => `mods/geocine/icons/files/${id}.svg`;
 const own = (table, key) => (Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined);
 
-// rel: "/"-separated path (only the last parts matter); dir: a folder; open: an open folder.
-export function iconFor(rel, dir = false, open = false) {
-  const parts = String(rel).toLowerCase().split(/[\\/]/).filter(Boolean), name = parts[parts.length - 1] ?? "";
+// Every row of every list asks for its icon on every render, so answers are remembered (shared by
+// all copies; the table never changes while the module lives). When no name or folder key has a
+// "/" (true of the shipped table), only the last part decides, so the cache is keyed by it.
+const nested = [ICONS.fileNames, ICONS.folderNames, ICONS.folderNamesExpanded].some((t) => Object.keys(t ?? {}).some((k) => k.includes("/")));
+const memo = new Map();
+const MEMO_MAX = 4000;
+
+function lookup(parts, dir, open) {
+  const name = parts[parts.length - 1] ?? "";
   const find = (table) => {
     let id;
     for (let i = 0; !id && i < parts.length - 1; i++) id = own(table, parts.slice(i).join("/"));
@@ -20,6 +26,27 @@ export function iconFor(rel, dir = false, open = false) {
   let id = find(ICONS.fileNames);
   for (const e of extensions) id ??= own(ICONS.fileExtensions, e);
   return path(id ?? ICONS.file);
+}
+
+// rel: "/"-separated path (only the last parts matter); dir: a folder; open: an open folder.
+export function iconFor(rel, dir = false, open = false) {
+  const s = String(rel).toLowerCase();
+  let key;
+  if (nested) key = s;
+  else {
+    let end = s.length;
+    while (end > 0 && (s[end - 1] === "/" || s[end - 1] === "\\")) end--;
+    const cut = Math.max(s.lastIndexOf("/", end - 1), s.lastIndexOf("\\", end - 1));
+    key = s.slice(cut + 1, end);
+  }
+  key = (dir ? (open ? "o" : "d") : "f") + key;
+  let hit = memo.get(key);
+  if (hit === undefined) {
+    if (memo.size >= MEMO_MAX) memo.clear();
+    hit = lookup((nested ? s : key.slice(1)).split(/[\\/]/).filter(Boolean), dir, open);
+    memo.set(key, hit);
+  }
+  return hit;
 }
 
 export const rootIcon = (open = true) => path(open ? ICONS.rootFolderExpanded : ICONS.rootFolder);

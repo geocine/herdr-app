@@ -8,25 +8,37 @@
 // cybertron288/herdr-mods `filetree` (MIT). See NOTICE.md.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Popup, v_virtual_list, VirtualListScrollHandle, h_resizable, resizable_panel } from "gpui-base";
-import { theme, settings, watchFolder, notify, home } from "herdr";
+import { theme, settings, watchFolder, notify, home, layout } from "herdr";
 import { SIZE, frame, header, subbar, row, iconButton, segmented, empty, textButton, badge, counts, ui } from "../../lib/ui.js";
 import { statusLetter, statusColor } from "../../lib/git.js";
 import { location, slash, baseName } from "../../lib/where.js";
 import { iconFor } from "../../lib/icons.js";
 import { openFull, closeFull, inFull } from "../../lib/nav.js";
 import Preview from "../../lib/preview/index.js";
-import { listDir, diskIndex, compare, PER_FOLDER, INDEX_DIRS, INDEX_PATHS } from "./disk.js";
+import { listDirs, cheapMany, diskIndex, compare, PER_FOLDER, INDEX_DIRS, INDEX_PATHS } from "./disk.js";
 import { readGit, gitIndex, emptyGit, ancestors, dirOf, baseOf, within, NEW, MODIFIED, DELETED } from "./status.js";
-import { search, words } from "./fuzzy.js";
+import { search, searchSliced, words } from "./fuzzy.js";
 import { openExternal, revealExternal, revealLabel, copy, sendPath, sendTarget, terminalHere, native, relTo } from "./actions.js";
 import { rootKey, recall, remember, pref, setPref } from "./memory.js";
 
 const ROW = SIZE.row;
 const FIND_LIMIT = 200;
+// Changed searches at most this many paths at once (more go in slices, as the index does).
+const SYNC_SEARCH = 3000;
 // Changed builds its rows on every render: at most this many of git's paths.
 const CHANGED_LIMIT = 2000;
 // A search index is read again once a change made it stale and it is this old, or at this age.
 const STALE_AGE = 3000, INDEX_AGE = 300000;
+// The timer (ms); a watched local folder is read on every WATCHED_EVERY-th tick only.
+const TICK = 10000, WATCHED_EVERY = 3;
+// Changes reported within SETTLE ms make one refresh. AHEAD: folders read ahead after an open.
+const SETTLE = 120, AHEAD = 40;
+// A shown ignored folder that changes (a build's target/) is listed again this long after (ms).
+const LAZY = 2000;
+// A refresh still running after this long (ms) no longer holds the next ones back.
+const STUCK = 30000;
+// Folders whose listings and git are kept for going back to them.
+const KEEP_TREES = 8;
 const MENU_W = 236, ITEM_H = 28;
 const SPLIT = { min: 200, max: 900, default: 320 };
 const VIEWS = ["all", "changed"];
@@ -40,6 +52,10 @@ const changeColor = (t, i) => statusColor(t, i === NEW ? "A" : i === MODIFIED ? 
 
 export default class FilesView extends View {
   init(p, cx) {
+    // `new FilesView(props)` already runs init (gpui-kit's View constructor does), and inline()
+    // runs it again: once is enough (twice doubled the timer, the watch and every refresh).
+    if (this.started) return;
+    this.started = true;
     this.p = p ?? {};
     this.handle = cx.focus_handle();
     this.scroll = VirtualListScrollHandle.new();
@@ -48,6 +64,10 @@ export default class FilesView extends View {
     this.split = Math.max(SPLIT.min, Math.min(SPLIT.max, Number(pref("split", SPLIT.default)) || SPLIT.default));
     this.width = 360; this.query = ""; this.hits = null; this.searchSeq = 0; this.shown = [];
     this.preview = null; this.menu = null; this.typing = false;
+    // ver: bumped by every change the rows depend on; rows() is rebuilt only then.
+    this.ver = 0; this.built = null; this.tick = 0; this.dirty = false; this.runs = 0; this.loadingAt = 0;
+    // The last folders shown (their listings, git and repo place), so going back shows at once.
+    this.trees = new Map();
     this.start = this.p.start?.path ? this.p.start : null;
     this.input = InputState.new({ placeholder: "Search files" });
     this.input.on("change", (_e, cx) => { const v = this.input.value(); if (v !== this.query) this.search(v, cx); });
@@ -60,8 +80,18 @@ export default class FilesView extends View {
     this.input.on("focus", (_e, cx) => { this.typing = true; cx.notify(); });
     this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     this.reset(null, null);
-    cx.timer.every(10000, (cx) => {
-      this.refresh(cx);
+    // Out of sight (another panel tab, the panel hidden), nothing is read: it is marked dirty
+    // and read when it shows. A watched local folder already refreshes on every change, so the
+    // timer only reads it every third tick (for git state the watch can't see).
+    cx.timer.every(TICK, (cx) => {
+      if (!this.root) return;
+      if (!this.visible()) { this.dirty = true; return; }
+      this.tick = (this.tick + 1) % WATCHED_EVERY;
+      if (this.on || this.watched !== this.root || !this.tick) this.refresh(cx);
+      // The watch sees git's own files only when its .git folder is inside this one: not in a
+      // worktree (.git is a file there) or below the repo's top. Until a change in .git/ shows
+      // up, git alone is read on the other ticks too (staging, commits, as before).
+      else if (this.git.repo && !this.ctx.gitSeen) this.refresh(cx, new Set(), true);
       if (this.index && this.outdated(this.index)) this.searchAgain(cx);
     });
   }
@@ -75,20 +105,50 @@ export default class FilesView extends View {
   get wide() { return Boolean(this.p.wide); }
   get full() { return Boolean(this.p.full) || inFull(); }
 
+  touch() { this.ver++; }
+
+  // Whether this copy is on screen: full mode is; a layout block showing the files view is unless
+  // it or a node above it is hidden, or a stack above it shows another child. Not found in the
+  // layout (a pane, a window): yes.
+  visible() {
+    if (this.p.full) return true;
+    let tree;
+    try { tree = layout(); } catch { return true; }
+    let found = false, shown = false;
+    const walk = (n, ok) => {
+      if (!n || typeof n !== "object" || shown) return;
+      ok = ok && !n.hidden;
+      const c = n.content;
+      if (c && typeof c.mod === "string" && c.props?.view === "files") { found = true; if (ok) shown = true; }
+      for (const k of Array.isArray(n.children) ? n.children : []) walk(k, ok && (n.type !== "stack" || !n.active || n.active === k?.id));
+      for (const f of Array.isArray(n.floating) ? n.floating : []) walk(f, ok);
+    };
+    walk(tree, true);
+    return !found || shown;
+  }
+
   // ── the folder shown ─────────────────────────────────────────────────────────────────
   // Leaves the folder shown (its open folders, cursor and file are remembered) for root.
   reset(root, on) {
-    if (this.root) this.save();
-    const key = rootKey(root ?? "", on), s = root ? recall(key) : null;
-    this.ctx = { key, root, on, base: null, drops: 0, failed: null };
+    if (this.root) {
+      this.save();
+      this.trees.delete(this.ctx.key);
+      if (!this.error) this.trees.set(this.ctx.key, { entries: this.entries, cut: this.cut, git: this.git, base: this.ctx.base });
+      for (const k of [...this.trees.keys()].slice(0, Math.max(0, this.trees.size - KEEP_TREES))) this.trees.delete(k);
+    }
+    const key = rootKey(root ?? "", on), s = root ? recall(key) : null, kept = root ? this.trees.get(key) : null;
+    this.ctx = { key, root, on, base: kept?.base ?? null, drops: 0, failed: null };
     this.root = root; this.on = on;
-    this.entries = new Map(); this.folders = new Set(s?.folders); this.shut = new Set(); this.pending = new Set();
-    this.cursor = s?.cursor ?? ""; this.git = emptyGit(); this.index = null; this.indexing = null;
+    this.entries = kept?.entries ?? new Map(); this.cut = kept?.cut ?? new Set();
+    this.folders = new Set(s?.folders); this.shut = new Set(); this.pending = new Set();
+    this.cursor = s?.cursor ?? ""; this.git = kept?.git ?? emptyGit(); this.index = null; this.indexing = null;
     this.hits = null; this.searchError = null; this.searchSeq++; this.searching = false;
-    this.error = null; this.limited = false; this.loading = false; this.again = false; this.watched = null;
+    this.error = null; this.loading = false; this.queued = null; this.waiting = false; this.watched = null; this.dirty = false;
+    this.lazy = new Set(); this.lazyWaiting = false;
     this.menu = null; this.file = null;
     this.scrollTo = this.cursor || null;
     if (this.query) { this.query = ""; this.input?.set_value(""); }
+    this.touch();
     return s?.file ?? null;
   }
 
@@ -109,9 +169,10 @@ export default class FilesView extends View {
       const s = this.start;
       this.start = null;
       const rel = s.root && slash(s.root) !== cwd ? relTo(cwd, join(slash(s.root), s.path)) : s.path;
-      if (rel) { file = rel; this.cursor = rel; for (const a of ancestors(rel)) this.folders.add(a); this.scrollTo = rel; }
+      if (rel) { file = rel; this.cursor = rel; for (const a of ancestors(rel)) this.folders.add(a); this.scrollTo = rel; this.touch(); }
     }
-    this.refresh(cx);
+    // Out of sight (the panel hidden, another tab): read when it shows.
+    if (this.visible()) this.refresh(cx); else this.dirty = true;
     if (file) {
       const ctx = this.ctx;
       // Not now: render can't create the Preview (a retained view).
@@ -119,48 +180,127 @@ export default class FilesView extends View {
     }
   }
 
-  refresh(cx) {
+  // A refresh asked for while one runs: only (folders to list again) or null (all of them), and
+  // whether git is read again.
+  queue(only, git = true) {
+    const q = this.queued;
+    if (!q) { this.queued = { only: only ? new Set(only) : null, git }; return; }
+    if (!only) q.only = null; else if (q.only) for (const p of only) q.only.add(p);
+    q.git ||= git;
+  }
+
+  // Runs what was queued.
+  dequeue(cx) {
+    const q = this.queued;
+    this.queued = null;
+    if (q) this.refresh(cx, q.only, q.git);
+  }
+
+  // A refresh a moment from now, gathering what asks for one meanwhile (a build writes in bursts).
+  soon(cx, only, git) {
+    this.queue(only, git);
+    if (this.waiting) return;
+    this.waiting = true;
+    const ctx = this.ctx;
+    cx.timer.after(SETTLE, (cx) => {
+      if (!this.current(ctx)) return;
+      this.waiting = false;
+      if (!this.loading) this.dequeue(cx);
+    });
+  }
+
+  // Lists the root and the open folders again (only: just these of them) and reads git (unless
+  // withGit is false: only ignored paths changed). The tree shows as soon as the folders are
+  // listed; git's marks follow.
+  refresh(cx, only = null, withGit = true) {
     if (!this.root) return;
-    if (this.loading) { this.again = true; return; }
-    const ctx = this.ctx, drops = ctx.drops;
-    this.loading = true;
+    // One at a time; one stuck (a process that never answers) is let go after STUCK ms.
+    if (this.loading && Date.now() - this.loadingAt < STUCK) { this.queue(only, withGit); return; }
+    const ctx = this.ctx, drops = ctx.drops, first = !this.entries.has(""), run = ++this.runs;
+    const mine = () => this.current(ctx) && this.runs === run;
+    this.loading = true; this.loadingAt = Date.now();
+    const list = ["", ...this.folders].filter((p) => !only || only.has(p) || (!p && first));
     cx.spawn(async (cx) => {
       try {
-        const [more, git] = await Promise.all([
-          Promise.all(["", ...this.folders].map((path) => this.loadFolder(path, ctx).catch((e) => {
-            if (!path) throw e;
-            if (this.current(ctx)) { this.folders.delete(path); this.entries.delete(path); }
-            return false;
-          }))),
-          readGit(ctx.root, ctx.on, ctx.base),
-        ]);
-        if (!this.current(ctx)) return;
+        const listing = this.loadFolders(list, ctx).then((got) => {
+          if (!mine() || got.get("") instanceof Error) return got;
+          for (const [p, r] of got) if (p && r instanceof Error) { this.folders.delete(p); this.entries.delete(p); }
+          this.error = null;
+          this.touch();
+          cx.notify();
+          this.watch(cx);
+          if (first) cx.spawn(async (cx) => this.readAhead([], ["", ...this.folders], ctx, cx));
+          return got;
+        });
+        const [got, git] = await Promise.all([listing, withGit || !this.git.known ? readGit(ctx.root, ctx.on, ctx.base) : null]);
+        if (!mine()) return;
+        if (got.get("") instanceof Error) throw got.get("");
+        if (!git) return;
         if (ctx.drops === drops) ctx.base = git.repo && !git.failed ? { top: git.top, prefix: git.prefix } : null;
         const prev = this.git;
-        this.git = git; this.limited = more.some(Boolean); this.error = null;
+        this.git = git;
         if (git.known && (!prev.known || prev.repo !== git.repo || prev.rootIgnored !== git.rootIgnored)) {
           if (this.index) { this.index.stale = true; this.index.at = 0; this.searchAgain(cx); }
           if (this.preview && prev.top !== git.top) this.preview.set_props(this.previewProps());
         }
+        this.touch();
         // Changed searches git's paths: they may have changed.
         if (this.view === "changed" && this.hits) this.searchAgain(cx);
-        this.watch(cx);
-      } catch (e) { if (this.current(ctx)) { this.error = message(e); this.git = emptyGit(true); this.entries = new Map(); } }
+      } catch (e) { if (mine()) { this.error = message(e); this.git = emptyGit(true); this.entries = new Map(); this.touch(); } }
       finally {
-        if (this.current(ctx)) {
+        if (mine()) {
           this.loading = false;
-          if (this.again) { this.again = false; this.refresh(cx); }
+          if (!this.waiting) this.dequeue(cx);
         }
         cx.notify();
       }
     });
   }
 
-  async loadFolder(path, ctx) {
-    const { entries, more } = await listDir(join(ctx.root, path), ctx.on);
-    if (!this.current(ctx) || (path && !this.folders.has(path))) return false;
-    this.entries.set(path, entries);
-    return more;
+  // Lists folders (relative paths) into the tree's cache, in one process where that's possible.
+  // Map rel → true, or the Error that folder gave. A closed folder's listing is kept: opening it
+  // again shows it at once (and reads it again behind).
+  async loadFolders(rels, ctx) {
+    const out = new Map();
+    if (!rels.length) return out;
+    const got = await listDirs(rels.map((rel) => join(ctx.root, rel)), ctx.on);
+    if (!this.current(ctx)) return out;
+    for (const rel of rels) {
+      const r = got.get(join(ctx.root, rel)) ?? new Error("Cannot open this folder");
+      if (r instanceof Error) { out.set(rel, r); continue; }
+      this.entries.set(rel, r.entries);
+      if (r.more) this.cut.add(rel); else this.cut.delete(rel);
+      out.set(rel, true);
+    }
+    this.touch();
+    return out;
+  }
+
+  // After folders opened: reads the warm ones again (shown from the cache, maybe stale) and,
+  // where many folders cost one process, the folders inside the opened ones not read yet, so
+  // opening those is instant too.
+  async readAhead(again, parents, ctx, cx) {
+    const batch = [...again];
+    if (await cheapMany(ctx.on)) {
+      let n = 0;
+      for (const p of parents) {
+        for (const e of this.entries.get(p) ?? []) {
+          if (n >= AHEAD) break;
+          if (!e.dir) continue;
+          const rel = p ? `${p}/${e.name}` : e.name;
+          if (!this.entries.has(rel) && !this.pending.has(rel) && !batch.includes(rel)) { batch.push(rel); n++; }
+        }
+      }
+    }
+    if (!batch.length || !this.current(ctx)) return;
+    const got = await this.loadFolders(batch, ctx).catch(() => null);
+    if (!got || !this.current(ctx)) return;
+    let shown = false;
+    for (const [rel, r] of got) {
+      if (r instanceof Error) { this.entries.delete(rel); if (this.folders.delete(rel)) shown = true; }
+      else if (this.folders.has(rel)) shown = true;
+    }
+    if (shown) { this.touch(); cx.notify(); }
   }
 
   // Local folders refresh when something under them changes; other machines on the timer.
@@ -180,15 +320,26 @@ export default class FilesView extends View {
   }
 
   // A batch of changed paths: refresh unless all of them are out of sight (an ignored folder
-  // not open: a build in target/ or node_modules), and mark the search index stale.
+  // not open: a build in target/ or node_modules), and mark the search index stale. Only the
+  // shown folders that hold a changed path are listed again; a change in .git reads git alone.
   changed(paths, cx) {
-    let shown = !paths.length, touched = false;
+    let shown = !paths.length, touched = false, all = !paths.length, git = !paths.length;
+    const only = new Set(), lazy = new Set();
     for (const abs of paths) {
       const rel = relTo(this.root, abs);
-      if (rel === null || rel === "") { shown = true; touched = true; continue; }
+      if (rel === null || rel === "") { shown = true; touched = true; all = true; git = true; continue; }
       if (rel === ".git") { this.ctx.base = null; this.ctx.drops++; }
+      if (rel.startsWith(".git/")) this.ctx.gitSeen = true;
+      const inGit = rel.split("/").includes(".git");
+      if (!inGit || rel === ".git/index" || rel === ".git/info/exclude") touched = true;
+      // A shown ignored folder's own entry (target/ while a build writes in it): its folder is
+      // listed again a while later, without git, once however many come.
+      if (this.ignoredEntry(rel)) { lazy.add(dirOf(rel)); continue; }
       if (!shown && !this.unseen(rel)) shown = true;
-      if (!rel.split("/").includes(".git") || rel === ".git/index" || rel === ".git/info/exclude") touched = true;
+      if (!inGit) { const d = dirOf(rel); if (!d || this.folders.has(d)) only.add(d); }
+      // An ignored path changes no git mark; anything else (and git's own files) may.
+      // Outside a repo, only a new .git makes git worth asking.
+      if (!git && (inGit || !this.git.known || (this.git.repo && (!this.isIgnored(rel) || this.git.status.has(rel))))) git = true;
     }
     if (touched && this.index) {
       this.index.stale = true;
@@ -198,13 +349,41 @@ export default class FilesView extends View {
         cx.timer.after(STALE_AGE, (cx) => { if (this.index === index) this.searchAgain(cx); });
       }
     }
-    if (shown) this.refresh(cx);
+    if (!shown && !lazy.size) return;
+    if (!this.visible()) { this.dirty = true; return; }
+    if (!shown) { this.later(cx, lazy); return; }
+    for (const d of lazy) only.add(d);
+    this.soon(cx, all ? null : only, git);
+  }
+
+  // Whether rel is an ignored, closed folder listed in a shown folder (root or open).
+  ignoredEntry(rel) {
+    const g = this.git, dir = dirOf(rel);
+    if (!g.repo || this.folders.has(rel) || (dir && !this.folders.has(dir)) || !this.isIgnored(rel) || g.status.has(rel)) return false;
+    const name = baseOf(rel);
+    return (this.entries.get(dir) ?? []).some((e) => e.dir && e.name === name);
+  }
+
+  // Lists these folders again (no git) LAZY ms from now, gathering what comes meanwhile.
+  later(cx, dirs) {
+    for (const d of dirs) this.lazy.add(d);
+    if (this.lazyWaiting) return;
+    this.lazyWaiting = true;
+    const ctx = this.ctx;
+    cx.timer.after(LAZY, (cx) => {
+      if (!this.current(ctx)) return;
+      const d = this.lazy;
+      this.lazy = new Set(); this.lazyWaiting = false;
+      if (d.size) this.refresh(cx, d, false);
+    });
   }
 
   // Whether a change at rel leaves the tree and git's marks as they are.
   unseen(rel) {
     const g = this.git;
     if (!rel || !g.known) return false;
+    // Git's own files that change no status here: objects, logs, other worktrees, locks.
+    if (/(^|\/)\.git\/(objects|logs|worktrees)(\/|$)|(^|\/)\.git\/.*\.lock$/.test(rel)) return true;
     const dir = dirOf(rel);
     if (!dir || this.folders.has(dir)) return false;
     if (!g.repo) return !rel.startsWith(".git/");
@@ -220,8 +399,11 @@ export default class FilesView extends View {
     if (this.hits) { this.reveal(r.rel, true, cx); return; }
     if (this.view === "changed" && !r.disk) {
       if (this.shut.has(r.rel)) this.shut.delete(r.rel); else this.shut.add(r.rel);
+      this.touch();
     } else if (this.folders.has(r.rel)) {
-      for (const f of [...this.folders]) if (f === r.rel || f.startsWith(r.rel + "/")) { this.folders.delete(f); this.entries.delete(f); }
+      // Closed: its listing (and those below) stay cached for opening it again.
+      for (const f of [...this.folders]) if (f === r.rel || f.startsWith(r.rel + "/")) this.folders.delete(f);
+      this.touch();
       this.save();
     } else this.open([r.rel], cx, () => this.save(), false);
   }
@@ -229,30 +411,41 @@ export default class FilesView extends View {
   collapseAll(cx) {
     if (this.view === "changed") for (const r of this.changedRows()) { if (r.dir && !r.disk) this.shut.add(r.rel); }
     this.folders.clear();
-    for (const k of [...this.entries.keys()]) if (k) this.entries.delete(k);
+    this.touch();
     this.cursor = this.cursor.split("/")[0];
     this.scrollTo = this.cursor;
     this.save();
     cx.notify();
   }
 
-  // Opens folders (with parents, those above them too) and loads what they hold.
+  // Opens folders (with parents, those above them too). One read before shows at once (and is
+  // read again behind); one not read yet shows a "Loading…" row until its listing comes.
   open(paths, cx, then, parents = true) {
     const ctx = this.ctx, todo = [];
     for (const p of paths) for (const d of parents ? [...ancestors(p).reverse(), p] : [p]) if (d && !this.folders.has(d)) { this.folders.add(d); todo.push(d); }
+    const cold = todo.filter((d) => !this.entries.has(d) && !this.pending.has(d));
+    const warm = todo.filter((d) => this.entries.has(d));
+    for (const d of cold) this.pending.add(d);
+    this.touch();
+    cx.notify();
     cx.spawn(async (cx) => {
-      await Promise.all(todo.map(async (d) => {
-        if (!this.current(ctx) || this.entries.has(d) || this.pending.has(d)) return;
-        this.pending.add(d);
-        try { if (await this.loadFolder(d, ctx)) this.limited = true; }
-        catch (e) {
-          if (!this.current(ctx)) return;
-          this.folders.delete(d);
-          notify({ title: "Can't open this folder", body: `${d}: ${message(e)}`, level: "warning", timeout: 3000 });
-        } finally { if (this.current(ctx)) this.pending.delete(d); }
-      }));
-      if (this.current(ctx)) then?.();
+      if (cold.length) {
+        const got = await this.loadFolders(cold, ctx).catch((e) => new Map(cold.map((d) => [d, e])));
+        if (!this.current(ctx)) return;
+        for (const d of cold) {
+          this.pending.delete(d);
+          const r = got.get(d);
+          if (r instanceof Error) {
+            this.folders.delete(d);
+            notify({ title: "Can't open this folder", body: `${d}: ${message(r)}`, level: "warning", timeout: 3000 });
+          }
+        }
+        this.touch();
+      }
+      if (!this.current(ctx)) return;
+      then?.();
       cx.notify();
+      await this.readAhead(warm, [...cold, ...warm], ctx, cx);
     });
   }
 
@@ -263,7 +456,7 @@ export default class FilesView extends View {
     if (this.view === "changed") {
       // In Changed a path git doesn't list isn't in the tree: show it in All.
       if (!this.git.files.has(rel) && ![...this.git.files.keys()].some((f) => f.startsWith(rel + "/"))) this.setView("all", cx);
-      else for (const a of [...ancestors(rel), ...(openIt ? [rel] : [])]) this.shut.delete(a);
+      else { for (const a of [...ancestors(rel), ...(openIt ? [rel] : [])]) this.shut.delete(a); this.touch(); }
     }
     this.open(openIt ? [rel] : ancestors(rel), cx, () => { this.scrollTo = rel; this.save(); });
   }
@@ -272,7 +465,7 @@ export default class FilesView extends View {
     if (view === this.view || !VIEWS.includes(view)) return;
     this.view = view;
     setPref("view", view);
-    this.hits = null; this.searchSeq++;
+    this.hits = null; this.searchSeq++; this.touch();
     if (this.query.trim()) this.search(this.query, cx);
     this.scrollTo = this.cursor || null;
     cx.notify();
@@ -292,11 +485,13 @@ export default class FilesView extends View {
   search(query, cx, quiet = false) {
     this.query = query;
     const seq = ++this.searchSeq;
-    if (!words(query).length) { this.hits = null; this.searching = false; this.searchError = null; this.scrollTo = this.cursor || null; cx.notify(); return; }
+    if (!words(query).length) { this.hits = null; this.touch(); this.searching = false; this.searchError = null; this.scrollTo = this.cursor || null; cx.notify(); return; }
     const ctx = this.ctx;
-    if (this.view === "changed") {
+    // Changed searches git's paths: at once when they are few, else in slices like the index.
+    if (this.view === "changed" && this.git.files.size <= SYNC_SEARCH) {
       const all = [...this.git.files.keys()];
       this.hits = search(all, all.map((r) => r.toLowerCase()), query, FIND_LIMIT).map((h) => ({ ...h, dir: this.git.untracked.has(h.rel) || this.git.links.has(h.rel) }));
+      this.touch();
       this.afterSearch(quiet);
       cx.notify();
       return;
@@ -305,11 +500,23 @@ export default class FilesView extends View {
     cx.notify();
     cx.spawn(async (cx) => {
       try {
-        const index = await this.ensureIndex(ctx);
-        if (seq !== this.searchSeq || !this.current(ctx)) return;
-        this.hits = search(index.all, index.lower, query, FIND_LIMIT).map((h) => ({ ...h, dir: index.dirs.has(h.rel) }));
+        const alive = () => seq === this.searchSeq && this.current(ctx);
+        let all, lower, isDir;
+        if (this.view === "changed") {
+          const g = this.git;
+          all = [...g.files.keys()]; lower = all.map((r) => r.toLowerCase());
+          isDir = (rel) => g.untracked.has(rel) || g.links.has(rel);
+        } else {
+          const index = await this.ensureIndex(ctx);
+          if (!alive()) return;
+          all = index.all; lower = index.lower; isDir = (rel) => index.dirs.has(rel);
+        }
+        const hits = await searchSliced(all, lower, query, FIND_LIMIT, cx, alive);
+        if (!hits || !alive()) return;
+        this.hits = hits.map((h) => ({ ...h, dir: isDir(h.rel) }));
+        this.touch();
         this.afterSearch(quiet);
-      } catch (e) { if (seq === this.searchSeq && this.current(ctx)) { this.hits = []; this.searchError = message(e); } }
+      } catch (e) { if (seq === this.searchSeq && this.current(ctx)) { this.hits = []; this.searchError = message(e); this.touch(); } }
       finally { if (seq === this.searchSeq) this.searching = false; cx.notify(); }
     });
   }
@@ -347,7 +554,7 @@ export default class FilesView extends View {
   }
 
   clearSearch(cx) {
-    this.query = ""; this.hits = null; this.searchSeq++; this.searching = false; this.searchError = null;
+    this.query = ""; this.hits = null; this.searchSeq++; this.searching = false; this.searchError = null; this.touch();
     this.input.set_value("");
     this.scrollTo = this.cursor || null;
     cx.notify();
@@ -356,6 +563,14 @@ export default class FilesView extends View {
   // ── rows ─────────────────────────────────────────────────────────────────────────────
   // Tree rows: { key, rel, name, dir, depth, open, gone, disk }; search rows add hit: pos.
   rows() {
+    const key = `${this.ver}|${this.view}`;
+    if (this.built?.key === key) { this.changedCut = this.built.cut; return this.built.rows; }
+    const rows = this.buildRows();
+    this.built = { key, rows, cut: this.changedCut };
+    return rows;
+  }
+
+  buildRows() {
     this.changedCut = false;
     if (this.error || !this.root) return [];
     if (this.hits) return this.hitRows();
@@ -369,8 +584,16 @@ export default class FilesView extends View {
     for (const e of this.entries.get(prefix) ?? []) {
       const rel = prefix ? `${prefix}/${e.name}` : e.name, open = e.dir && this.folders.has(rel);
       out.push({ key: rel, rel, name: e.name, dir: e.dir, depth, open, gone: false, disk: e.dir });
-      if (open && depth < 40) this.diskRows(rel, depth + 1, out);
+      if (open && depth < 40) { if (!this.loadingRow(rel, depth + 1, out)) this.diskRows(rel, depth + 1, out); }
     }
+  }
+
+  // An open folder whose listing hasn't come yet: one dim "Loading…" row under it.
+  loadingRow(rel, depth, out) {
+    if (this.entries.has(rel) || !this.pending.has(rel)) return false;
+    const key = `${rel}/\u0001`;
+    out.push({ key, rel: key, name: "Loading…", dir: false, depth, open: false, gone: false, disk: false, loading: true });
+    return true;
   }
 
   hitRows() {
@@ -396,7 +619,7 @@ export default class FilesView extends View {
         if (dir && !gone && (g.untracked.has(rel) || g.links.has(rel))) {
           const open = this.folders.has(rel);
           push(rel, true, depth, open, false, true);
-          if (open) mixed(rel, depth + 1);
+          if (open && !this.loadingRow(rel, depth + 1, out)) mixed(rel, depth + 1);
         } else if (dir && !gone) {
           const open = !this.shut.has(rel);
           push(rel, true, depth, open, false, false);
@@ -414,7 +637,7 @@ export default class FilesView extends View {
         if (dir && onDisk) {
           const open = this.folders.has(rel);
           push(rel, dir, depth, open, gone, true);
-          if (open && depth < 40) mixed(rel, depth + 1);
+          if (open && depth < 40 && !this.loadingRow(rel, depth + 1, out)) mixed(rel, depth + 1);
         } else push(rel, dir, depth, false, gone, false);
       }
     };
@@ -464,7 +687,7 @@ export default class FilesView extends View {
 
   // Enter, a click: a file opens, a folder opens or closes; neither when it is gone.
   activate(r, cx) {
-    if (!r) return;
+    if (!r || r.loading) return;
     this.cursor = r.rel;
     if (r.gone) { notify({ title: r.dir ? "Deleted folder" : "Deleted file", body: `${r.rel} is no longer on disk`, level: "info", timeout: 2500 }); return; }
     if (r.dir) this.toggle(r, cx);
@@ -486,6 +709,7 @@ export default class FilesView extends View {
   }
 
   openMenu(r, at) {
+    if (r.loading) return;
     this.cursor = r.rel;
     const groups = this.menuItems(r);
     this.menu = { r, groups, items: groups.flat(), at: at.keys ? 0 : -1, x: at.x, y: at.y, up: at.up };
@@ -614,6 +838,8 @@ export default class FilesView extends View {
 
   // ── drawing ──────────────────────────────────────────────────────────────────────────
   treeRow(r, t) {
+    if (r.loading) return row(t, `files-row-${r.key}`, { selected: false, depth: r.depth })
+      .child(div().w(12).flex_none()).child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(r.name));
     const g = this.git, rel = r.rel;
     const own = g.status.get(rel), ignored = !own && this.isIgnored(rel);
     const status = own ?? (!ignored && this.underUntracked(rel) ? "?" : null);
@@ -709,7 +935,7 @@ export default class FilesView extends View {
 
   noteView(t, n) {
     const [title, detail, action] = n;
-    const button = action === "retry" ? textButton(t, "files-retry", "Retry", (_e, cx) => { this.error = null; this.refresh(cx); cx.notify(); }, { icon: "rotate-cw" })
+    const button = action === "retry" ? textButton(t, "files-retry", "Retry", (_e, cx) => { this.error = null; this.touch(); this.refresh(cx); cx.notify(); }, { icon: "rotate-cw" })
       : action === "clear" ? textButton(t, "files-clear-search", "Clear search", (_e, cx) => this.clearSearch(cx))
       : action === "all" ? textButton(t, "files-show-all", "Show all files", (_e, cx) => this.setView("all", cx))
       : null;
@@ -727,7 +953,7 @@ export default class FilesView extends View {
       else if (!this.pending.size && !this.loading) this.scrollTo = null;
     }
     const n = this.note(rows), more = [];
-    if (this.limited && !this.hits) more.push(`Folders show their first ${PER_FOLDER} entries`);
+    if (!this.hits && [...this.cut].some((f) => !f || this.folders.has(f))) more.push(`Folders show their first ${thousands(PER_FOLDER)} entries`);
     if (this.hits?.length >= FIND_LIMIT) more.push(`Best ${FIND_LIMIT} matches`);
     if (this.view === "changed" && this.changedCut) more.push(`Changed shows the first ${thousands(CHANGED_LIMIT)} paths`);
     if (this.hits && this.index && !this.index.full) more.push(`Search covers the first ${this.index.cut.includes("dirs") ? `${thousands(INDEX_DIRS)} folders` : `${thousands(INDEX_PATHS)} files`}`);
@@ -791,6 +1017,8 @@ export default class FilesView extends View {
 
   render(cx) {
     this.sync(cx);
+    // Changes came while out of sight: read them now that it shows.
+    if (this.dirty && this.root && this.visible()) { this.dirty = false; this.refresh(cx); }
     const t = theme();
     const root = (body) => body.id("files-root").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
       .on_size_change((size, cx) => { const w = size.width / zoom(); if (Math.abs(w - this.width) > 4) { this.width = w; cx.notify(); } });

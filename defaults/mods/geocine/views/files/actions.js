@@ -15,7 +15,8 @@ export const native = (abs, on) => (!on && platform() === "windows" ? abs.replac
 
 export function relTo(root, abs) {
   if (!root || !abs) return null;
-  const a = abs.replace(/\\/g, "/"), r = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  // The folder watch reports Windows paths in their long form ("\\?\C:\...", "\\?\UNC\host\...").
+  const a = abs.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "").replace(/\\/g, "/"), r = root.replace(/\\/g, "/").replace(/\/+$/, "");
   if (a.toLowerCase() === r.toLowerCase()) return "";
   return a.toLowerCase().startsWith(r.toLowerCase() + "/") ? a.slice(r.length + 1) : null;
 }

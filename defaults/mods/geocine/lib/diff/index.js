@@ -15,14 +15,26 @@ import { SIZE, ui, monoFont, empty, textButton, iconButton, counts, badge, subba
 import { statusColor, statusLetter } from "../git.js";
 import { iconFor } from "../icons.js";
 import { loadDiff } from "./parse.js";
-import { buildItems, expandTabs, ROW, FILE, CHAR, MAX_COLUMNS, LARGE } from "./rows.js";
+import { buildItems, fileItems, fileKey, isBuilt, expandTabs, ROW, FILE, CHAR, MAX_COLUMNS, LARGE } from "./rows.js";
 import { tokenize, langOf } from "./syntax.js";
 
 // Viewed marks are shared state, so the side panel and full mode (two mod copies) agree.
 const VIEWED = "geocine.diff.viewed", SPLIT = "diff.split";
 const SPLIT_MIN = 640;   // narrower, a split diff is drawn unified (the choice is kept)
 const KEEP_VIEWED = 1000;
+// Line work (word marks, runs, widths) per slice of time: a render builds at most BUILD_MS of it
+// and leaves "Loading…" for the rest, which a task finishes in slices, so a 100,000-line diff never
+// holds a frame past its budget.
+const BUILD_MS = 15, SYNC_LINES = 1500;   // a bigger file is always built by a task
 let instances = 0;
+
+// A big diff is ~100,000 objects (one per line). Before each set_props the host walks what a
+// nested view's own properties reach (to roll back a failed update) and refuses past 10,000
+// objects, so the update is lost. The diff's data lives beside the instance instead: these
+// names read and write a per-instance record (defined on the class below).
+const held = new WeakMap();
+const hold = (view) => { let h = held.get(view); if (!h) held.set(view, (h = {})); return h; };
+const HELD = ["files", "itemList", "byKey", "sizes", "sizesAll", "sizesFor", "trailingAt", "marks"];
 
 const zoom = () => Number(settings()?.zoom) || 1;
 // A theme color with an alpha byte (theme colors are #rrggbb; others are used as they are).
@@ -80,6 +92,8 @@ export default class Diff extends View {
     this.load(cx);
     // Scrolling redraws only the list; the sticky header above it follows the range it drew.
     cx.timer.every(150, (cx) => {
+      if (this.frames === this.seenFrames) return;   // the list drew nothing new
+      this.seenFrames = this.frames;
       const sticky = this.stickyFile()?.path ?? null;
       if (sticky !== this.lastSticky) { this.lastSticky = sticky; cx.notify(); }
     });
@@ -114,6 +128,9 @@ export default class Diff extends View {
           // A reload keeps a large file shown when its diff is the same.
           if (old.get(f.path)?.shown && old.get(f.path).newSha === f.newSha) f.shown = true;
         }
+        // The line work happens here, between frames, so the render that shows the files only
+        // joins what is built.
+        if (!(await this.buildBodies(files, cx, () => id === this.loadId))) return;
         if (this.files && files.length !== this.files.length) this.shift = 0;
         this.files = files; this.more = files.more ?? 0; this.error = null;
       } catch (e) {
@@ -121,7 +138,12 @@ export default class Diff extends View {
         this.error = String(e?.message ?? e);
         if (fresh) this.files = null;
       } finally {
-        if (id === this.loadId) { this.loading = false; this.version++; cx.notify(); }
+        if (id === this.loadId) {
+          this.loading = false; this.version++;
+          // The rows are joined here too, so the next render only draws.
+          try { this.items(); } catch {}
+          cx.notify();
+        }
       }
     });
   }
@@ -129,8 +151,9 @@ export default class Diff extends View {
   // ---- state ---------------------------------------------------------------
 
   viewKey(f) { return `${this.p.on ?? ""}|${this.p.top}|${f.path}`; }
-  // "viewed", "changed" (viewed, then changed), or "none".
-  viewed() { const v = shared(VIEWED); return v && typeof v === "object" ? v : {}; }
+  // "viewed", "changed" (viewed, then changed), or "none". The marks are read once per render
+  // (items()), not once per file.
+  viewed() { const v = this.marks !== undefined ? this.marks : shared(VIEWED); return v && typeof v === "object" ? v : {}; }
   viewState(f) {
     const v = this.viewed()[this.viewKey(f)];
     return v === undefined ? "none" : v === blobOf(f) ? "viewed" : "changed";
@@ -147,12 +170,16 @@ export default class Diff extends View {
   }
   setViewed(f, on) {
     const key = this.viewKey(f);
-    const viewed = { ...this.viewed() };
+    // Read fresh: another copy (full mode, the side panel) may have marked files since this one
+    // last drew, and writing back an old set would drop its marks.
+    const now = shared(VIEWED);
+    const viewed = { ...(now && typeof now === "object" ? now : {}) };
     delete viewed[key];
     if (on) viewed[key] = blobOf(f);
     const keys = Object.keys(viewed);
     if (keys.length > KEEP_VIEWED) for (const k of keys.slice(0, keys.length - KEEP_VIEWED)) delete viewed[k];
     setShared(VIEWED, viewed);
+    this.marks = viewed; this.marksJson = JSON.stringify(viewed);
     this.setOpen(f, !on);
   }
   fold(kind, cx) {
@@ -178,18 +205,58 @@ export default class Diff extends View {
     this.shift = 0; this.version++; cx.notify();
   }
 
+  // Builds the open files' line items (kept on each file) in slices of time, yielding between
+  // them. → false when keep() says the work is no longer wanted.
+  async buildBodies(files, cx, keep = () => true) {
+    const split = this.splitShown();
+    if (this.marks === undefined) { this.marks = shared(VIEWED); this.marksJson = JSON.stringify(this.marks ?? null); }
+    let slice = Date.now();
+    for (let i = 0; i < files.length; i++) {
+      if (!keep()) return false;
+      const f = files[i];
+      if (this.isOpen(f) && !isBuilt(f, i, split)) fileItems(f, fileKey(f, i), split);
+      if (Date.now() - slice > BUILD_MS) { await cx.sleep(0); slice = Date.now(); }
+    }
+    return keep();
+  }
+
   items() {
     // Marks set in another copy (full mode, the side panel) refold the files here too.
     const marks = shared(VIEWED);
-    if (marks !== this.marks) { this.marks = marks; this.version++; }
+    if (marks !== this.marks) {
+      const json = JSON.stringify(marks ?? null);
+      if (json !== this.marksJson) { this.marksJson = json; this.version++; }
+      this.marks = marks;
+    }
     const split = this.splitShown(), id = `${this.version}:${split}`;
     if (id !== this.itemsId) {
       this.itemsId = id; this.visible = null;
-      const built = buildItems(this.files ?? [], { open: (f) => this.isOpen(f), split });
+      // Files not built within this render's slice show "Loading…" until a task builds them.
+      const files = this.files ?? [], deadline = Date.now() + BUILD_MS;
+      let waiting = false;
+      const ready = (f, i) => isBuilt(f, i, split) || (Date.now() < deadline && f.adds + f.dels <= SYNC_LINES) || ((waiting = true), false);
+      const built = buildItems(files, { open: (f) => this.isOpen(f), split, ready });
       this.itemList = built.items; this.most = built.most; this.digits = built.digits;
       this.byKey = new Map(this.itemList.map(i => [i.key, i]));
+      this.sizes = this.itemList.map(i => i.size); this.trailingAt = null;
+      this.totals = { adds: files.reduce((n, f) => n + f.adds, 0), dels: files.reduce((n, f) => n + f.dels, 0), viewed: files.filter(f => this.viewState(f) === "viewed").length };
+      this.waiting = waiting;
     }
     return this.itemList;
+  }
+
+  // Finishes the files a render left "Loading…", then draws them.
+  finishBuild(cx) {
+    if (!this.waiting || this.finishing) return;
+    this.finishing = true;
+    const files = this.files, id = this.loadId;
+    cx.spawn(async (cx) => {
+      try {
+        // Out of the render that asked: it has spent its own slice already.
+        await cx.sleep(0);
+        if (await this.buildBodies(files ?? [], cx, () => id === this.loadId && files === this.files)) { this.itemsId = null; cx.notify(); }
+      } finally { this.finishing = false; }
+    });
   }
 
   numberWidth() { return Math.max(26, Math.ceil(this.digits * CHAR) + 12); }
@@ -204,9 +271,12 @@ export default class Diff extends View {
   // The blank after the list, so the last file's header can still reach the top.
   trailing() {
     const items = this.items();
+    if (this.trailingAt?.items === items && this.trailingAt.height === this.height) return this.trailingAt.value;
     let top = 0, last = 0;
     for (const item of items) { if (item.kind === "file") last = top; top += item.size; }
-    return Math.max(0, Math.ceil(this.height - (top - last)));
+    const value = Math.max(0, Math.ceil(this.height - (top - last)));
+    this.trailingAt = { items, height: this.height, value };
+    return value;
   }
 
   // The file whose lines open the view once its header has scrolled past the top.
@@ -381,8 +451,7 @@ export default class Diff extends View {
   }
 
   toolbar(t) {
-    const files = this.files ?? [], adds = files.reduce((n, f) => n + f.adds, 0), dels = files.reduce((n, f) => n + f.dels, 0);
-    const viewed = files.filter(f => this.viewState(f) === "viewed").length, split = this.splitShown();
+    const files = this.files ?? [], { adds, dels, viewed } = this.totals ?? { adds: 0, dels: 0, viewed: 0 }, split = this.splitShown();
     return subbar(t, `${this.uid}-bar`).bg(t.background)
       .child(div().text_size(SIZE.small).text_color(t.muted).child(`${files.length} ${files.length === 1 ? "file" : "files"}`))
       .child(counts(t, adds, dels))
@@ -411,7 +480,11 @@ export default class Diff extends View {
         : empty(t, this.loading ? "Loading diff…" : "No changes", this.loading ? null : "Nothing differs here."));
     }
     const items = this.items(), sticky = this.stickyFile(), shift = Math.min(this.shift, this.maxShift());
-    const sizes = [...items.map(i => i.size), this.trailing()];
+    this.finishBuild(cx);
+    // The sizes cross to the list on every frame; the array is only made again when they change.
+    const trailing = this.trailing();
+    if (this.sizesFor !== this.sizes || this.sizesTrailing !== trailing) { this.sizesFor = this.sizes; this.sizesTrailing = trailing; this.sizesAll = [...this.sizes, trailing]; }
+    const sizes = this.sizesAll;
     const listId = `${this.uid}-list`;
     const showBar = this.files.length > 1 || this.width >= SPLIT_MIN;
     return v_flex().id(this.uid).size_full().min_h(0).min_w(0).relative().bg(t.background).text_color(t.foreground)
@@ -460,4 +533,8 @@ export default class Diff extends View {
           .text_size(SIZE.small).text_color(t.muted).child(`${this.more} more untracked files not shown`))))
       .when(this.menu === "fold", el => el.child(this.foldMenu(t)));
   }
+}
+
+for (const name of HELD) {
+  Object.defineProperty(Diff.prototype, name, { get() { return hold(this)[name]; }, set(value) { hold(this)[name] = value; }, configurable: true });
 }
