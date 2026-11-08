@@ -431,7 +431,9 @@ export default class GraphView extends View {
     this.file = { path, rev };
     this.tab = "file";
     const p = { on: this.on, root: this.root, path, rev, repoTop: this.root, wide: Boolean(this.p.wide),
-      onOpen: (rel, r) => this.post((cx) => this.openPath(rel, r === undefined ? rev : r, cx)) };
+      onOpen: (rel, r) => this.post((cx) => this.openPath(rel, r === undefined ? rev : r, cx)),
+      // While the preview edits (a file from disk), typed keys are the editor's.
+      onEditing: (on) => { this.editing = on; } };
     if (this.previewView) this.previewView.set_props(p); else this.previewView = cx.new(Preview, p);
     this.handle.focus();
     cx.notify();
@@ -563,6 +565,7 @@ export default class GraphView extends View {
   // ---- drawing
 
   onKey(e, cx) {
+    if (this.editing) return;
     const k = e.key, ctrl = e.modifiers?.control || e.modifiers?.platform;
     if ((ctrl && k === "f") || (k === "/" && !ctrl)) { this.openFind(cx); cx.stop_propagation(); return; }
     if (this.find && k === "escape") { this.closeFind(cx); cx.stop_propagation(); return; }
