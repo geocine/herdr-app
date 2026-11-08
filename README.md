@@ -43,6 +43,17 @@ Done. It installs the app **and** the core.
 - Turn on `start_core_at_login` in settings: your terminals are back before you
   even open Herdr.
 
+### Geocine layout (the default)
+- Three panels beside your terminals, one click each in the tab bar:
+  - **Files**: your project as a tree. Git colors, search, right-click menu.
+    Click a file to read it: Markdown, code with colors, images.
+  - **Changes**: what changed, as diffs. Stage, unstage, discard, commit.
+  - **Graph**: every branch and commit. Checkout, merge, rebase and more.
+    Click a commit to see its diff.
+- **Full mode**: the expand button opens any panel almost as big as the window.
+- Green on black, light mode too.
+- Herdr's own layout is still there: `Ctrl+Shift+L` switches.
+
 ### Windows + Git Bash
 - Herdr follows your folder when you `cd` in Git Bash.
 - Agents started from Git Bash (`pi`, `codex`, `opencode`) are seen and resumed.
@@ -59,7 +70,7 @@ Done. It installs the app **and** the core.
 - It also shows how this build compares to upstream.
 
 ### Settings
-- Settings → Look: show or hide the **Files** and **Changes** panels.
+- Settings → Look: show or hide the **Files**, **Changes** and **Graph** panels.
 
 ### Privacy
 - **No usage data.** Nothing is collected or sent.
