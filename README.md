@@ -51,7 +51,8 @@ Done. It installs the app **and** the core.
   - **Graph**: every branch and commit. Checkout, merge, rebase and more.
     Click a commit to see its diff.
 - **Full mode**: the expand button opens any panel almost as big as the window.
-- Green on black, light mode too.
+- Herdr's own look, light and dark. Want green? Pick **geocine dark** in Settings → Look.
+- `Ctrl+B` hides the sidebar, like VS Code.
 - Herdr's own layout is still there: `Ctrl+Shift+L` switches.
 
 ### Windows + Git Bash
