@@ -60,6 +60,9 @@
     "f2": "tab.rename",
     "shift-f2": "space.rename"
   },
+  "layout:geocine": {
+    "ctrl-b": "layout.toggle:sidebar"
+  },
   "terminal": {
     "ctrl-backspace": "send:\u0017",
     "ctrl-left": "send:\u001bb",
