@@ -3,21 +3,29 @@
 // Diff: on its own page in the side panel ("← Changes"), beside the list in full mode, where the
 // list's first row shows every change at once. "Open file" in a diff shows the shared Preview.
 // Herdr's own Changes panel (defaults/mods/changes) is where this started.
+//
+// Speed: the list is a virtual list (only the rows on screen are drawn, however many changes);
+// a refresh is three git processes side by side; a folder watch ignores what git ignores
+// (target/, node_modules/) and git's own object writes; a copy that isn't shown only notes that
+// it is out of date and refreshes when it shows again; an open diff reloads only when its file
+// changed.
 import { View, div, svg, image } from "gpui-kit";
-import { h_flex, v_flex, InputState, Input, Popup, h_resizable, resizable_panel } from "gpui-base";
-import { theme, settings, watchFolder, notify } from "herdr";
-import { SIZE, ui, frame, header, subbar, row, section, iconButton, textButton, counts, badge, empty } from "../../lib/ui.js";
+import { h_flex, v_flex, InputState, Input, Popup, h_resizable, resizable_panel, v_virtual_list, VirtualListScrollHandle, Scrollbar } from "gpui-base";
+import { theme, settings, watchFolder, layout } from "herdr";
+import { SIZE, ui, frame, header, subbar, iconButton, textButton, counts, badge, empty } from "../../lib/ui.js";
 import { repoOf, statusColor, statusLetter } from "../../lib/git.js";
 import { location, locationKey, baseName, dirName } from "../../lib/where.js";
 import { iconFor } from "../../lib/icons.js";
 import { openFull, closeFull, inFull } from "../../lib/nav.js";
 import Diff from "../../lib/diff/index.js";
 import Preview from "../../lib/preview/index.js";
-import { SECTIONS, loadStatus, forgetLines, stage, unstage, stageAll, unstageAll, discard, commit } from "./status.js";
+import { SECTIONS, loadStatus, countLines, ignoredPaths, forgetLines, watchedPath, mergeSorted, stage, unstage, unstageAll, discard, commit } from "./status.js";
 
 const SPLIT = { min: 220, max: 720, default: 320 };
-const SHOWN = 150;   // rows drawn in all, so a render stays inside its ~50 ms
 const MENU_W = 236, ITEM_H = 28;
+const GAP = 4;                       // space above a section header and the "All changes" row
+const BADGE = 14, BUTTON = 20;       // a row's status letter and its small buttons (ui.js badge, iconButton size 20)
+const SETTLE = 250;                  // a burst of file writes is one refresh
 const zoom = () => Number(settings()?.zoom) || 1;
 const stop = (_e, cx) => cx.stop_propagation();
 const alpha = (c, a) => (/^#[0-9a-f]{6}$/i.test(c ?? "") ? c + a : c);
@@ -34,10 +42,32 @@ const GROUPS = [
   { id: "staged", label: "Staged Changes", from: ["staged"] },
   { id: "changes", label: "Changes", from: ["unstaged", "untracked"] },
 ];
-const byPath = (a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: "base" });
+// Writes under .git that never change what `git status` says.
+const GIT_NOISE = /^\.git\/(objects|logs|hooks|lfs|fsmonitor--daemon|worktrees)(\/|$)|^\.git\/(fetch_head|orig_head|commit_editmsg|gc\.log|description)$|\.lock$/;
+
+// Whether a Changes block is drawn in the shown layout: no hidden node above it, and the shown
+// child of every stack on the way. null when the layout has none (full mode, a pane).
+function shownIn(root) {
+  let found = null;
+  const walk = (n, shown) => {
+    if (!n || typeof n !== "object") return;
+    shown = shown && !n.hidden;
+    if (n.content?.props?.view === "changes") found = found === true || shown;
+    const kids = Array.isArray(n.children) ? n.children : [];
+    const active = n.type === "stack" ? (n.active ?? kids[0]?.id) : null;
+    for (const k of kids) walk(k, shown && (active === null || k?.id === active));
+    for (const f of Array.isArray(n.floating) ? n.floating : []) walk(f, shown);
+  };
+  walk(root, true);
+  return found;
+}
 
 export default class ChangesView extends View {
   init(p, cx) {
+    // Run as an inline view, init can be called twice on one instance (the host, then
+    // lib/inline.js): a second set of timers and watches would double every refresh.
+    if (this.inited) return;
+    this.inited = true;
     this.p = p ?? {};
     this.handle = cx.focus_handle();
     this.repo = null; this.on = null; this.ctx = null; this.cwd = null;
@@ -48,10 +78,18 @@ export default class ChangesView extends View {
     this.diff = null; this.preview = null; this.diffKey = null; this.previewKey = null;
     this.folded = new Set(pref("folded", []));
     this.split = Math.max(SPLIT.min, Math.min(SPLIT.max, Number(pref("split", SPLIT.default)) || SPLIT.default));
-    this.stamp = 0; this.sig = null;
-    this.hover = null; this.menu = null; this.menuFor = null; this.confirm = null;
+    this.menu = null; this.menuFor = null; this.confirm = null;
     this.message = ""; this.typing = false; this.busy = null; this.note = null;
     this.want = this.p.start?.path ? { path: this.p.start.path, section: this.p.start.section ?? null } : null;
+    // What makes an open diff reload: epoch (everything: a refresh click, our own git writes),
+    // a version per path (that file changed), allStamp (anything changed, for "All changes").
+    this.epoch = 0; this.versions = new Map(); this.counter = 0; this.allStamp = 0; this.sigs = null;
+    this.touched = new Set(); this.touchAll = false;
+    this.ignore = null; this.ignoreAt = 0;
+    this.started = false; this.stale = false;
+    this.dataVersion = 0; this.model = null;
+    this.scroll = VirtualListScrollHandle.new();
+    this.listW = 300; this.pressX = 0;
     this.input = InputState.new({ placeholder: "Commit message" });
     this.input.on("change", (_e, cx) => {
       const had = Boolean(this.message.trim());
@@ -68,18 +106,36 @@ export default class ChangesView extends View {
         this.syncDetail(cx); cx.notify();
       }
     });
-    cx.timer.every(4000, (cx) => { if (this.on || !this.watched) this.refresh(cx); });
-    cx.timer.every(30000, (cx) => this.refresh(cx));
-    this.refresh(cx);
+    // A remote repo (no watch) is polled; a local one rests on its watch, with a slow check
+    // behind it. A copy that isn't shown only notes that it is out of date.
+    cx.timer.every(4000, (cx) => { if (this.on || !this.watched || this.stale) this.tick(cx); });
+    cx.timer.every(30000, (cx) => this.tick(cx));
   }
 
   update(p) { this.p = p ?? {}; }
   poke() { const w = this.wake; this.wake = null; w?.(); }
+  // The copy goes (full mode closed): its timers and watch stop working.
+  close() { this.closed = true; this.watched = null; }
 
   get wide() { return Boolean(this.p.wide); }
   get full() { return Boolean(this.p.full) || inFull(); }
 
   // ---- data ----------------------------------------------------------------
+
+  // Whether this copy is on screen. A spare copy (one never drawn) and a hidden stack child do
+  // no git work.
+  isShown() {
+    if (this.p.hidden) return false;
+    if (this.full) return true;
+    try { return shownIn(layout()) ?? true; } catch { return true; }
+  }
+
+  tick(cx) {
+    if (!this.started || this.closed) return;
+    if (!this.isShown()) { this.stale = true; return; }
+    this.stale = false;
+    this.refresh(cx);
+  }
 
   refresh(cx, { changed = false } = {}) {
     if (this.loading) { this.again = true; this.againChanged ||= changed; return; }
@@ -88,55 +144,179 @@ export default class ChangesView extends View {
     const ctx = locationKey(loc);
     if (ctx !== this.ctx) {
       this.ctx = ctx; this.cwd = loc.cwd; this.repo = null; this.data = null; this.error = null; this.sel = null; this.page = "list";
-      this.previewAt = null; this.note = null; this.watched = null; this.sig = null; this.menu = null; this.confirm = null;
+      this.previewAt = null; this.note = null; this.watched = null; this.menu = null; this.confirm = null;
+      this.sigs = null; this.versions.clear(); this.touched = new Set(); this.touchAll = false; this.ignore = null; this.recheck = false;
+      this.dataVersion++;
     }
     this.loading = true;
+    const touched = this.touched, touchAll = this.touchAll || changed;
+    this.touched = new Set(); this.touchAll = false;
     cx.spawn(async (cx) => {
+      let counting = null;
       try {
-        const repo = await repoOf(loc.cwd, { on: loc.on });
+        // The repo's top is looked up once per place; later refreshes are the status alone
+        // (which also brings the branch and the commit).
+        let repo = this.recheck ? null : this.repo, data;
+        if (repo) data = await loadStatus(repo.top, loc.on, repo.top);
+        else if (this.error === "not-repo") {
+          // Still outside a repo, most likely: one quick look before reading any status.
+          repo = await repoOf(loc.cwd, { on: loc.on });
+          if (ctx !== this.ctx || !repo) return;
+          data = await loadStatus(repo.top, loc.on, repo.top);
+        } else {
+          const [found, read] = await Promise.all([repoOf(loc.cwd, { on: loc.on }), loadStatus(loc.cwd, loc.on).catch(e => ({ failed: e }))]);
+          if (ctx !== this.ctx) return;
+          if (!found) { this.repo = null; this.data = null; this.error = "not-repo"; this.recheck = false; this.dataVersion++; return; }
+          if ("failed" in read) throw read.failed;
+          repo = found; data = read;
+        }
         if (ctx !== this.ctx) return;
-        if (!repo) { this.repo = null; this.data = null; this.error = "not-repo"; return; }
-        const data = await loadStatus(repo.top, loc.on);
-        if (ctx !== this.ctx) return;
-        const sig = JSON.stringify([repo.head, Object.values(data.sections).map(l => l.map(e => [e.path, e.status, e.adds, e.dels]))]);
-        if (sig !== this.sig || changed) this.stamp++;
-        this.sig = sig; this.repo = repo; this.on = loc.on; this.data = data; this.error = null;
+        repo = { ...repo, branch: data.branch, head: data.sha };
+        this.noteChanges(data, repo, touched, touchAll, cx);
+        this.repo = repo; this.on = loc.on; this.data = data; this.error = null; this.recheck = false; this.dataVersion++;
         this.fixSelection();
         this.syncDetail(cx);
         this.watch(repo.top, cx);
+        if (data.uncounted.length) counting = { data, top: repo.top, on: loc.on };
       } catch (e) {
-        if (ctx === this.ctx) this.error = message(e);
+        // The repo stays (its list and actions with it); the next refresh looks it up again.
+        if (ctx === this.ctx) { this.error = message(e); this.recheck = true; }
       } finally {
         this.loading = false;
         if (this.again) { const c = this.againChanged; this.again = false; this.againChanged = false; this.refresh(cx, { changed: c }); }
         cx.notify();
       }
+      // Untracked files' line counts fill in after the list is up.
+      if (counting) {
+        await countLines(counting.data.uncounted, counting.top, counting.on);
+        if (this.data === counting.data) { this.dataVersion++; cx.notify(); }
+      }
     });
+  }
+
+  // Works out which files changed since the last refresh, for the open diff to reload only then.
+  noteChanges(data, repo, touched, touchAll, cx) {
+    const sigs = new Map();
+    for (const list of Object.values(data.sections)) {
+      for (const e of list) {
+        const k = e.path.toLowerCase();
+        // An untracked file's count fills in later; its writes reach `touched` instead.
+        const s = e.section === "untracked" ? "u" : `${e.section}:${e.status}:${e.adds}:${e.dels}:${e.binary}:${e.oldPath ?? ""}`;
+        sigs.set(k, sigs.has(k) ? `${sigs.get(k)}|${s}` : s);
+      }
+    }
+    const old = this.sigs ?? new Map();
+    // "All changes" is the worktree against HEAD: staging and unstaging leave it as it is. It
+    // reloads when files were written, a path came or went, or HEAD moved.
+    let all = !this.sigs || touched.size > 0, stray = false;
+    const bump = (k) => this.versions.set(k, ++this.counter);
+    for (const [k, s] of sigs) {
+      if (old.get(k) !== s || touched.has(k)) bump(k);
+      if (!old.has(k)) all = true;
+    }
+    for (const k of old.keys()) if (!sigs.has(k)) { bump(k); all = true; }
+    for (const k of touched) if (!sigs.has(k) && !old.has(k)) stray = true;
+    if (touchAll || (this.repo && (this.repo.head !== repo.head || this.repo.branch !== repo.branch))) { this.epoch++; all = true; }
+    if (all) this.allStamp++;
+    this.sigs = sigs;
+    // Writes that changed nothing git shows may be a folder git ignores that is new since the
+    // ignore list was read (a first `npm install`): read it again, at most every 5 s.
+    if (stray && Date.now() - this.ignoreAt > 5000) this.loadIgnored(repo.top, cx);
+  }
+
+  loadIgnored(top, cx) {
+    if (this.on) return;
+    this.ignoreAt = Date.now();
+    cx.spawn(async () => {
+      try { const ig = await ignoredPaths(top, null); if (this.watched === top) this.ignore = { top, ...ig }; } catch {}
+    });
+  }
+
+  // A path under the repo (lower case, "/"-separated) that git ignores.
+  ignored(rel) {
+    const ig = this.ignore;
+    if (!ig || ig.top !== this.watched) return false;
+    if (ig.files.has(rel) || ig.dirs.has(`${rel}/`)) return true;
+    for (let i = rel.indexOf("/"); i >= 0; i = rel.indexOf("/", i + 1)) if (ig.dirs.has(rel.slice(0, i + 1))) return true;
+    return false;
+  }
+
+  // Sorts a watch's paths: what git ignores and git's own bookkeeping are dropped; the rest
+  // are noted (for the diffs to reload). → whether anything is left to refresh for.
+  relevant(paths, top, cx) {
+    const base = `${watchedPath(top)}/`;
+    let any = false, rules = false;
+    for (const raw of paths ?? []) {
+      const p = watchedPath(raw);
+      if (!p.startsWith(base)) { if (base.startsWith(`${p}/`)) { this.touchAll = true; any = true; } continue; }
+      const rel = p.slice(base.length);
+      if (!rel) { this.touchAll = true; any = true; continue; }
+      if (rel === ".git" || rel.startsWith(".git/")) {
+        if (GIT_NOISE.test(rel)) continue;
+        if (rel === ".git/info/exclude") rules = true;
+        any = true; continue;
+      }
+      if (this.ignored(rel)) continue;
+      if (rel === ".gitignore" || rel.endsWith("/.gitignore")) rules = true;
+      this.touched.add(rel); any = true;
+    }
+    if (rules) this.loadIgnored(top, cx);
+    return any;
   }
 
   watch(top, cx) {
     if (this.on || this.watched === top) return;
     this.watched = top;
+    this.loadIgnored(top, cx);
+    // One loop per folder: back at a repo left a moment ago, its loop (still waiting for an
+    // event) carries on rather than a second one starting beside it.
+    this.looping ??= new Set();
+    if (this.looping.has(top)) return;
+    this.looping.add(top);
     cx.spawn(async (cx) => {
       try {
         while (this.watched === top) {
           const paths = await watchFolder(top);
           if (this.watched !== top) break;
           forgetLines(paths);
+          if (!this.relevant(paths, top, cx)) continue;
           // A burst of writes (a build, a checkout) is one refresh.
           if (this.settling) continue;
           this.settling = true;
-          cx.timer.after(250, (cx) => { this.settling = false; this.refresh(cx, { changed: true }); });
+          cx.timer.after(SETTLE, (cx) => { this.settling = false; this.tick(cx); });
         }
       } catch { if (this.watched === top) this.watched = null; }
+      finally { this.looping.delete(top); }
     });
   }
 
   entries(sectionId) { return this.data?.sections[sectionId] ?? []; }
-  groupEntries(g) { return g.from.length === 1 ? this.entries(g.from[0]) : g.from.flatMap(id => this.entries(id)).sort(byPath); }
   allEntries() { return SECTIONS.flatMap(s => this.entries(s.id)); }
   find(sel) { return sel && sel !== "all" ? this.entries(sel.section).find(e => e.path === sel.path) ?? null : null; }
-  count() { return this.allEntries().length; }
+  count() { return this.listModel().count; }
+
+  // The list as rows, worked out once per refresh or fold (not per frame): items for the virtual
+  // list, their sizes, and the selectable rows in order.
+  listModel() {
+    const key = `${this.dataVersion}|${this.wide}|${[...this.folded].join(",")}`;
+    if (this.model?.key === key) return this.model;
+    const items = [], rows = [], groups = [];
+    let count = 0, adds = 0, dels = 0;
+    for (const s of SECTIONS) for (const e of this.entries(s.id)) { count++; adds += e.adds; dels += e.dels; }
+    if (this.wide && count) { items.push({ key: "all", kind: "all", size: SIZE.row + GAP }); rows.push("all"); }
+    for (const g of GROUPS) {
+      const list = g.from.length === 1 ? this.entries(g.from[0]) : mergeSorted(this.entries(g.from[0]), this.entries(g.from[1]));
+      if (!list.length) continue;
+      groups.push({ g, list });
+      items.push({ key: `s:${g.id}`, kind: "section", g, list, size: SIZE.row + GAP });
+      if (this.folded.has(g.id)) continue;
+      for (const e of list) { items.push({ key: `e:${e.section}:${e.path}`, kind: "entry", e, size: SIZE.row }); rows.push({ section: e.section, path: e.path }); }
+    }
+    if (this.data?.cut) items.push({ key: "cut", kind: "cut", size: SIZE.row });
+    items.push({ key: "end", kind: "end", size: 8 });
+    this.model = { key, items, sizes: items.map(i => i.size), byKey: new Map(items.map(i => [i.key, i])), rows, groups, count, adds, dels };
+    return this.model;
+  }
 
   // After a refresh: a selected file that moved (staged, unstaged) is followed to its new section.
   fixSelection() {
@@ -156,10 +336,10 @@ export default class ChangesView extends View {
 
   diffProps() {
     if (!this.repo || !this.sel) return null;
-    const base = { on: this.on, top: this.repo.top, stamp: this.stamp, onOpenFile: (path, rev) => this.openFile(path, rev) };
-    if (this.sel === "all") return { ...base, source: { kind: "head" } };
+    const base = { on: this.on, top: this.repo.top, onOpenFile: (path, rev) => this.openFile(path, rev) };
+    if (this.sel === "all") return { ...base, stamp: `${this.epoch}:${this.allStamp}`, source: { kind: "head" } };
     const kind = this.sel.section === "conflicts" ? "unstaged" : this.sel.section;
-    return { ...base, source: { kind }, paths: [this.sel.path] };
+    return { ...base, stamp: `${this.epoch}:${this.versions.get(this.sel.path.toLowerCase()) ?? 0}`, source: { kind }, paths: [this.sel.path] };
   }
 
   previewProps() {
@@ -208,11 +388,7 @@ export default class ChangesView extends View {
   }
 
   // The rows the keyboard moves through, in order.
-  flat() {
-    const out = this.wide && this.count() ? ["all"] : [];
-    for (const g of GROUPS) if (!this.folded.has(g.id)) for (const e of this.groupEntries(g)) if (out.length < SHOWN) out.push({ section: e.section, path: e.path });
-    return out;
-  }
+  flat() { return this.listModel().rows; }
   same(a, b) { return a === b || (a && b && a !== "all" && b !== "all" && a.section === b.section && a.path === b.path); }
 
   move(delta, cx) {
@@ -221,6 +397,8 @@ export default class ChangesView extends View {
     const at = rows.findIndex(r => this.same(r, this.sel));
     const next = rows[Math.max(0, Math.min(rows.length - 1, at < 0 ? (delta > 0 ? 0 : rows.length - 1) : at + delta))];
     this.select(next, cx, { open: false });
+    const key = next === "all" ? "all" : `e:${next.section}:${next.path}`, index = this.listModel().items.findIndex(i => i.key === key);
+    if (index >= 0) this.scroll.scroll_to_item(index);
   }
 
   key(e, cx) {
@@ -254,7 +432,9 @@ export default class ChangesView extends View {
     cx.spawn(async (cx) => {
       try { await work(top, on, head); }
       catch (e) { if (ctx === this.ctx) this.note = { error: true, text: message(e) }; }
-      finally { this.busy = null; this.refresh(cx, { changed: true }); cx.notify(); }
+      // Here the folder watch reports the files the action wrote (the diffs reload for those);
+      // another machine has no watch, so everything there reloads.
+      finally { this.busy = null; this.refresh(cx, { changed: Boolean(on) }); cx.notify(); }
     });
     cx.notify();
   }
@@ -298,11 +478,17 @@ export default class ChangesView extends View {
     ];
   }
 
+  openEntry(e, cx) {
+    this.sel = { section: e.section, path: e.path };
+    this.openFile(e.path, e.section === "staged" && e.status === "D" ? "HEAD" : null);
+    this.syncDetail(cx);
+  }
+
   runMenu(id, e, cx) {
     this.menu = null;
     const sel = { section: e.section, path: e.path };
     if (id === "diff") this.select(sel, cx);
-    else if (id === "open") { this.sel = sel; this.openFile(e.path, e.section === "staged" && e.status === "D" ? "HEAD" : null); this.syncDetail(cx); }
+    else if (id === "open") this.openEntry(e, cx);
     else if (id === "stage" || id === "unstage") this.toggleStage(e, cx);
     else if (id === "discard") this.askDiscard([e], cx);
     else if (id === "copy") cx.write_to_clipboard(e.path);
@@ -310,47 +496,112 @@ export default class ChangesView extends View {
     cx.notify();
   }
 
+  // ---- the list's clicks ---------------------------------------------------
+  // Rows of a virtual list take no handlers of their own: the list reports which row was
+  // clicked, and where the press was (from the right edge) picks a row's button, as the
+  // rows lay them out (rowActions, sectionActions).
+
+  itemClick(key, cx) {
+    const item = this.listModel().byKey.get(key);
+    if (!item) return;
+    this.typing = false; this.handle.focus();
+    const fromEnd = this.listW - this.pressX;
+    if (item.kind === "all") return this.select("all", cx);
+    if (item.kind === "section") return this.sectionClick(item, fromEnd, cx);
+    if (item.kind !== "entry") return;
+    const e = item.e;
+    const hit = this.busy ? null : rowButtonAt(fromEnd, e.section !== "conflicts");
+    if (hit === "stage") return this.toggleStage(e, cx);
+    if (hit === "discard") return this.askDiscard([e], cx);
+    if (hit === "open") { this.openEntry(e, cx); cx.notify(); return; }
+    this.select({ section: e.section, path: e.path }, cx);
+  }
+
+  sectionClick(item, fromEnd, cx) {
+    const { g, list } = item;
+    const at = fromEnd >= SIZE.pad - 1 && fromEnd < SIZE.pad + BUTTON + 1 ? 0 : fromEnd >= SIZE.pad + BUTTON + 3 && fromEnd < SIZE.pad + 2 * BUTTON + 5 ? 1 : -1;
+    const actions = this.sectionActions(g, list);
+    const action = at >= 0 && !this.busy ? actions[actions.length - 1 - at] : null;
+    if (action) return action.run(cx);
+    const open = !this.folded.has(g.id);
+    open ? this.folded.add(g.id) : this.folded.delete(g.id);
+    setPref("folded", [...this.folded]);
+    cx.notify();
+  }
+
+  // A section's buttons, left to right: { icon, run }.
+  sectionActions(g, list) {
+    if (g.id === "staged") return [{ icon: "minus", run: (cx) => this.act("unstage", (top, on, head) => unstageAll(top, on, head), cx) }];
+    if (g.id === "changes") return [
+      { icon: "undo-2", run: (cx) => this.askDiscard(list, cx, `all ${plural(list.length, "change")}`) },
+      { icon: "plus", run: (cx) => this.act("stage", (top, on) => stage(list, top, on), cx) },
+    ];
+    return [{ icon: "plus", run: (cx) => this.act("stage", (top, on) => stage(list, top, on), cx) }];
+  }
+
   // ---- drawing -------------------------------------------------------------
 
+  // A small button inside a list row: drawn only (the list takes the click).
+  rowButton(t, icon, disabled = false) {
+    return div().size(BUTTON).flex_none().flex().items_center().justify_center().rounded(SIZE.radius).text_color(disabled ? t.dim : t.muted)
+      .when(!disabled, el => el.hover(s => s.bg(t.hover).text_color(t.foreground)))
+      .child(svg(ui(icon)).size(SIZE.icon));
+  }
+
+  rowActions(t, e) {
+    return h_flex().flex_none().gap(1)
+      .child(this.rowButton(t, "file-text"))
+      .when(e.section !== "conflicts", el => el.child(this.rowButton(t, "undo-2")))
+      .child(this.rowButton(t, e.section === "staged" ? "minus" : "plus"));
+  }
+
   entryRow(t, e) {
-    const sel = { section: e.section, path: e.path }, id = `changes-row-${e.section}-${e.path}`, hovered = this.hover === id;
-    const name = baseName(e.path), dir = dirName(e.path), selected = this.same(this.sel, sel) && (this.wide || this.page === "list");
-    const small = (bid, icon, tip, fn) => iconButton(t, `${id}-${bid}`, icon, (_ev, cx) => fn(cx), { size: 20 }).tooltip(tip);
-    return row(t, id, { selected, onClick: (_ev, cx) => { this.typing = false; this.handle.focus(); this.select(sel, cx); } })
-      .on_hover((on, cx) => { if (on) this.hover = id; else if (this.hover === id) this.hover = null; cx.notify(); })
-      .on_mouse_down("right", () => { this.menuFor = e; })
+    const selected = this.same(this.sel, { section: e.section, path: e.path }) && (this.wide || this.page === "list");
+    const name = baseName(e.path), dir = dirName(e.path), buttons = selected && !this.busy;
+    return h_flex().h(SIZE.row).flex_none().w_full().pl(SIZE.pad).pr(SIZE.pad).gap(6).items_center().text_size(SIZE.text).relative()
+      .when(selected, el => el.bg(t.selected)).text_color(t.foreground).cursor_pointer().hover(s => s.bg(selected ? t.selected : t.hover))
       .child(image(iconFor(e.path)).size(SIZE.icon).flex_none())
       .child(h_flex().flex_1().min_w(0).gap(6).items_center().overflow_hidden()
         .child(div().min_w(0).flex_shrink_1().truncate().text_color(e.status === "D" ? t.muted : t.foreground).when(e.status === "D", el => el.line_through()).child(name))
         .when(Boolean(dir), el => el.child(div().min_w(0).flex_shrink(100).truncate().text_size(SIZE.small).text_color(t.dim).child(dir))))
-      .when((hovered || selected) && !this.busy, el => el.child(h_flex().flex_none().gap(1)
-        .child(small("open", "file-text", "Open file", (cx) => { this.sel = sel; this.openFile(e.path, e.section === "staged" && e.status === "D" ? "HEAD" : null); this.syncDetail(cx); }))
-        .when(e.section !== "conflicts", el => el.child(small("discard", "undo-2", e.section === "untracked" ? "Delete" : "Discard changes", (cx) => this.askDiscard([e], cx))))
-        .child(e.section === "staged" ? small("unstage", "minus", "Unstage", (cx) => this.toggleStage(e, cx)) : small("stage", "plus", "Stage", (cx) => this.toggleStage(e, cx)))))
-      .when(!(hovered || selected) || this.busy, el => el.child(e.binary ? div().flex_none().text_size(SIZE.small).text_color(t.dim).child("bin") : counts(t, e.adds, e.dels)))
-      .child(badge(t, statusLetter(e.status), statusColor(t, e.status)).text_center());
+      .when(buttons, el => el.child(this.rowActions(t, e)))
+      .when(!buttons, el => el.child(e.binary ? div().flex_none().text_size(SIZE.small).text_color(t.dim).child("bin") : counts(t, e.adds, e.dels)))
+      .child(badge(t, statusLetter(e.status), statusColor(t, e.status)).text_center())
+      // Hovered, the buttons cover the counts (a style, so no redraw per row the pointer crosses).
+      .when(!selected && !this.busy, el => el.child(h_flex().absolute().top(0).left(0).size_full().pr(SIZE.pad + BADGE + 6).items_center().justify_end()
+        .opacity(0).hover(s => s.opacity(1))
+        .child(div().h_full().flex_none().bg(t.background).child(h_flex().h_full().pl(4).items_center().bg(t.hover).child(this.rowActions(t, e))))));
   }
 
-  sectionView(t, s) {
-    const list = this.groupEntries(s);
-    if (!list.length) return null;
-    const open = !this.folded.has(s.id);
-    const btn = (bid, icon, tip, fn) => iconButton(t, `changes-sec-${s.id}-${bid}`, icon, (_e, cx) => fn(cx), { size: 20, disabled: Boolean(this.busy) }).tooltip(tip);
-    const actions = s.id === "staged" ? [btn("unstage", "minus", "Unstage all", (cx) => this.act("unstage", (top, on, head) => unstageAll(top, on, head), cx))]
-      : s.id === "changes" ? [btn("discard", "undo-2", "Discard all changes", (cx) => this.askDiscard(list, cx, `all ${plural(list.length, "change")}`)), btn("stage", "plus", "Stage all changes", (cx) => this.act("stage", (top, on) => stage(list, top, on), cx))]
-      : [btn("stage", "plus", "Mark all resolved", (cx) => this.act("stage", (top, on) => stage(list, top, on), cx))];
-    const head = section(t, `changes-sec-${s.id}`, s.label, {
-      count: list.length, open, actions,
-      onToggle: (_e, cx) => { open ? this.folded.add(s.id) : this.folded.delete(s.id); setPref("folded", [...this.folded]); cx.notify(); },
-    }).mt(4).when(s.id === "conflicts", el => el.text_color(t.ansi1));
-    // A render has ~50 ms: rows are drawn up to a budget shared by the sections.
-    const shown = open ? list.slice(0, Math.max(0, this.budget)) : [];
-    this.budget -= shown.length;
-    const rest = open ? list.length - shown.length : 0;
-    return v_flex().w_full().flex_none().child(head)
-      .children(shown.map(e => this.entryRow(t, e)))
-      .when(rest > 0, el => el.child(div().px(SIZE.pad).h(SIZE.row).flex().items_center().text_size(SIZE.small).text_color(t.dim)
-        .child(`${rest} more not listed${this.wide ? "" : " · full mode shows the diff of all"}`)));
+  sectionRow(t, item) {
+    const { g, list } = item, open = !this.folded.has(g.id);
+    return div().w_full().h(SIZE.row + GAP).pt(GAP).child(h_flex().h(SIZE.row).flex_none().w_full().px(SIZE.pad).gap(4).items_center()
+      .text_size(SIZE.small).font_semibold().text_color(g.id === "conflicts" ? t.ansi1 : t.muted).cursor_pointer().hover(s => s.text_color(t.foreground))
+      .child(svg(ui(open ? "chevron-down" : "chevron-right")).size(12))
+      .child(g.label.toUpperCase())
+      .child(div().px(5).rounded(8).bg(t.surface).text_color(t.dim).child(String(list.length)))
+      .child(div().flex_1())
+      .child(h_flex().flex_none().gap(4).children(this.sectionActions(g, list).map(a => this.rowButton(t, a.icon, Boolean(this.busy))))));
+  }
+
+  allRow(t) {
+    const m = this.listModel();
+    return div().w_full().h(SIZE.row + GAP).pt(GAP).child(h_flex().h(SIZE.row).flex_none().w_full().pl(SIZE.pad).pr(SIZE.pad).gap(6).items_center().text_size(SIZE.text)
+      .when(this.sel === "all", el => el.bg(t.selected)).text_color(t.foreground).cursor_pointer().hover(s => s.bg(this.sel === "all" ? t.selected : t.hover))
+      .child(svg(ui("changes")).size(SIZE.icon).flex_none().text_color(t.accent))
+      .child(div().flex_1().min_w(0).truncate().font_medium().child("All changes"))
+      .child(counts(t, m.adds, m.dels))
+      .child(div().w(BADGE).flex_none()));
+  }
+
+  itemView(t, item) {
+    switch (item.kind) {
+      case "entry": return this.entryRow(t, item.e);
+      case "section": return this.sectionRow(t, item);
+      case "all": return this.allRow(t);
+      case "cut": return div().w_full().h(item.size).px(SIZE.pad).flex().items_center().text_size(SIZE.small).text_color(t.dim).child(`Showing the first ${this.data?.total ?? 0} changes`);
+      default: return div().w_full().h(item.size);
+    }
   }
 
   commitBox(t) {
@@ -376,25 +627,18 @@ export default class ChangesView extends View {
         .child(iconButton(t, "changes-note-close", "close", (_e, cx) => { this.note = null; cx.notify(); }, { size: 18 }))));
   }
 
-  allRow(t) {
-    const list = this.allEntries(), adds = list.reduce((a, e) => a + e.adds, 0), dels = list.reduce((a, e) => a + e.dels, 0);
-    return row(t, "changes-all", { selected: this.sel === "all", onClick: (_e, cx) => { this.typing = false; this.handle.focus(); this.select("all", cx); } })
-      .child(svg(ui("changes")).size(SIZE.icon).flex_none().text_color(t.accent))
-      .child(div().flex_1().min_w(0).truncate().font_medium().child("All changes"))
-      .child(counts(t, adds, dels))
-      .child(div().w(14).flex_none());
-  }
-
   list(t) {
     if (this.error === "not-repo") return empty(t, "Not a git repository", this.cwd, textButton(t, "changes-retry", "Refresh", (_e, cx) => this.refresh(cx), { icon: "rotate-cw" }));
     if (!this.data) {
       if (this.error) return empty(t, "Can't read the changes", this.error, textButton(t, "changes-retry", "Retry", (_e, cx) => this.refresh(cx), { icon: "rotate-cw" }));
       return empty(t, this.ctx ? "Reading changes…" : "No folder", this.ctx ? null : "Focus a terminal to see its repo's changes");
     }
-    if (!this.count()) {
+    const m = this.listModel();
+    if (!m.count) {
       return v_flex().size_full()
         .child(empty(t, "No changes", this.note && !this.note.error ? `${this.note.text} · working tree clean` : `Working tree clean${this.repo?.branch ? ` on ${this.repo.branch}` : ""}`));
     }
+    const items = m.items;
     return v_flex().id("changes-list-wrap").flex_1().min_h(0).w_full().relative()
       .on_mouse_down("right", (e, cx) => {
         if (!this.menuFor) return;
@@ -403,10 +647,17 @@ export default class ChangesView extends View {
         this.menuFor = null; cx.notify();
       })
       .child(this.commitBox(t))
-      .child(v_flex().id("changes-list").flex_1().min_h(0).pb(8).overflow_y_scrollbar()
-        .when(this.wide, el => el.child(this.allRow(t).mt(4)))
-        .map(el => { this.budget = SHOWN; return el.children(GROUPS.map(g => this.sectionView(t, g)).filter(Boolean)); })
-        .when(Boolean(this.data.cut), el => el.child(div().px(SIZE.pad).py(4).text_size(SIZE.small).text_color(t.dim).child(`Showing the first ${this.data.total} changes`))))
+      .child(div().id("changes-list").flex_1().min_h(0).w_full().relative()
+        .on_size_change((size) => { this.listW = size.width / zoom(); })
+        .on_mouse_down("left", (e) => { this.pressX = (e.local_position?.x ?? 0) / zoom(); })
+        .child(v_virtual_list("changes-rows", items.length, m.sizes, (i) => items[i]?.key ?? `x${i}`, (range) => {
+          const out = [];
+          for (let i = range.start; i < range.end; i++) out.push(this.itemView(t, items[i]));
+          return out;
+        }).track_scroll(this.scroll).size_full()
+          .on_item_click((key, cx) => this.itemClick(key, cx))
+          .on_item_secondary_click((key) => { const item = this.listModel().byKey.get(key); this.menuFor = item?.kind === "entry" ? item.e : null; }))
+        .child(Scrollbar.vertical("changes-rows").absolute().inset_0()))
       .when(Boolean(this.menu), el => el.child(this.menuView(t)));
   }
 
@@ -496,7 +747,11 @@ export default class ChangesView extends View {
   }
 
   render(cx) {
-    if (locationKey() !== this.ctx && location().cwd) this.refresh(cx);
+    // The first draw starts the work (a copy that is made but never drawn stays idle); a copy
+    // that missed changes while hidden catches up when it shows again.
+    if (!this.started) { this.started = true; this.refresh(cx); }
+    else if (this.stale && this.isShown()) { this.stale = false; this.refresh(cx); }
+    else { const loc = location(); if (loc.cwd && locationKey(loc) !== this.ctx) this.refresh(cx); }
     const t = theme();
     const root = (body) => div().id("changes-root").size_full().min_w(0).min_h(0).relative().flex().flex_col()
       .track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
@@ -526,4 +781,14 @@ export default class ChangesView extends View {
       .child(resizable_panel().size(this.split).size_range(SPLIT.min, SPLIT.max).child(v_flex().size_full().min_h(0).border_r(1).border_color(t.border).child(this.list(t))))
       .child(resizable_panel().child(div().size_full().min_w(0).flex().flex_col().child(this.data && this.count() ? this.detailPane(t) : empty(t, this.data ? "Nothing to show" : "", null))))));
   }
+}
+
+// Which of a file row's buttons a press `fromEnd` px from the row's right edge is on: they sit
+// right to left past the padding and the status letter, gap 1 (rowActions).
+function rowButtonAt(fromEnd, discardable) {
+  const start = SIZE.pad + BADGE + 6;
+  const slot = (n) => fromEnd >= start + n * (BUTTON + 1) - 0.5 && fromEnd < start + n * (BUTTON + 1) + BUTTON + 0.5;
+  if (slot(0)) return "stage";
+  if (discardable) return slot(1) ? "discard" : slot(2) ? "open" : null;
+  return slot(1) ? "open" : null;
 }

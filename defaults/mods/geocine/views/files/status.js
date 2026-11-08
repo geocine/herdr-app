@@ -14,6 +14,8 @@ const IGNORED = 5000;
 // change: 0 new (untracked or added), 1 modified, 2 deleted.
 export const NEW = 0, MODIFIED = 1, DELETED = 2;
 const UNSURE = 2000, MAYBE_DIRS = 2000;
+// What kinds() found for untracked paths, by machine, folder and path. Shared by the copies.
+const KINDS = new Map();
 
 export const dirOf = (rel) => (rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "");
 export const baseOf = (rel) => rel.slice(rel.lastIndexOf("/") + 1);
@@ -162,12 +164,20 @@ export async function readGit(root, on, base) {
     if (parseStatus(r.stdout, out) && base) { failed = true; return; }
     const unsure = [...out.unsure].slice(0, UNSURE);
     const maybe = [...out.maybeDirs].slice(0, MAYBE_DIRS);
-    const look = [...new Set([...unsure, ...maybe])];
-    if (!look.length) return;
-    const found = await kinds(root, look, on).catch(() => null);
-    if (!found) return;
+    // Every untracked file is a "maybe" (a link to a folder looks like one): what each turned
+    // out to be is kept, so a refresh only asks about new ones.
+    const key = (rel) => `${on ?? ""}\n${root}\n${rel}`;
+    const fresh = maybe.filter((rel) => !KINDS.has(key(rel)));
+    const look = [...new Set([...unsure, ...fresh])];
+    let found = new Map();
+    if (look.length) {
+      found = await kinds(root, look, on).catch(() => null);
+      if (!found) return;
+      if (KINDS.size > 50000) KINDS.clear();
+      for (const rel of fresh) KINDS.set(key(rel), found.get(rel) ?? "");
+    }
     for (const rel of unsure) { const k = found.get(rel); if (!k) out.gone.add(rel); else if (k === "d") out.links.add(rel); }
-    for (const rel of maybe) if (found.get(rel) === "d") out.links.add(rel);
+    for (const rel of maybe) if ((found.get(rel) ?? KINDS.get(key(rel))) === "d") out.links.add(rel);
   });
   const [, numstat] = await Promise.all([status, g(["diff", "HEAD", "--numstat", "-z", "--no-renames", "--", "."]).catch(() => null)]);
   if (failed && base) return readGit(root, on);
