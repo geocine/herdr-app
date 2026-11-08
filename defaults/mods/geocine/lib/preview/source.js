@@ -1,13 +1,14 @@
 // Reads one file for the preview: from this computer's disk (Windows first: no shell, only
-// readTextFile and, for what it can't read, one PowerShell call), from another machine (a Unix
-// shell there, as file-preview did), or as of a commit (git, through lib/git.js).
+// readTextFile and, for what it can't read, a robocopy into the cache read back with
+// fs/promises; PowerShell only as the last resort, it takes ~0.4 s to start), from another
+// machine (a Unix shell there, as file-preview did), or as of a commit (git, through lib/git.js).
 // Images are copied into the mod's hidden .cache/ folder, because image() only reads inside
 // the app's folder.
 // Adapted from bohumil/herdr-file-preview `source.js` and `commits.js` (MIT). See NOTICE.md.
 import { exec, readTextFile, appHome, window } from "herdr";
 import * as fs from "fs/promises";
 import { gitRead } from "../git.js";
-import { slash, dirName } from "../where.js";
+import { slash, dirName, baseName } from "../where.js";
 import { isMarkdown, isImage, extension } from "./lang.js";
 
 export const LIMIT = 1000000;                      // characters shown; more is cut off with a notice
@@ -16,6 +17,11 @@ const IMAGE_MAX = 16 * 1024 * 1024;                 // image() refuses bigger as
 const REMOTE_IMAGE_MAX = 6 * 1024 * 1024;           // base64 through exec's 8 MiB output
 const REV_MAX = 7 * 1024 * 1024;                    // a blob read through exec's 8 MiB output
 const KEEP = 120;                                   // cached image copies kept
+const PROBE_MAX = 16 * 1024 * 1024;                 // files read back from a cache copy; bigger ones ask PowerShell
+// Never text: past PROBE_MAX these say "Binary" from their size alone.
+const BINARY = new Set(["exe", "dll", "pdb", "lib", "obj", "o", "a", "so", "dylib", "rlib", "rmeta", "node", "wasm", "zip", "gz", "tgz", "xz", "bz2", "7z", "rar", "zst",
+  "tar", "jar", "class", "pyc", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "woff", "woff2", "ttf", "otf", "ico", "mp3", "mp4", "wav", "ogg", "flac", "mov",
+  "avi", "mkv", "webm", "psd", "db", "sqlite", "bin", "iso", "img", "msi", "cab", "dmg", "pack", "idx", "blend", "fbx", "glb", "exr", "hdr", "tif", "tiff", "dds"]);
 
 export const isWindows = (on) => !on && window()?.platform === "windows";
 
@@ -153,6 +159,55 @@ elseif ($kind -eq 'utf8') {
 
 async function probeLocal(abs) {
   if (!isWindows(null)) return probeRemote(abs, null);
+  return (await probeCopy(abs).catch(() => null)) ?? probePs(abs);
+}
+
+/**
+ * The fast probe (~30 ms): robocopy the file into the cache, read the copy's bytes back with
+ * fs/promises and look at them here. null when it can't tell (the app's folder is outside the
+ * home fs/promises reads, a big file that isn't known binary, a legacy code page): ask PowerShell.
+ */
+async function probeCopy(abs) {
+  const dir = cacheDir() + cacheName(abs, "probe"), name = baseName(abs);
+  const c = await robocopy(abs, dir, PROBE_MAX);
+  if (!c) return null;
+  if (c.missing) { removeTree(dir); return { kind: "missing", message: "This file no longer exists" }; }
+  try {
+    if (!c.copied) return BINARY.has(extension(abs)) ? { kind: "binary", message: "Binary file · no preview", size: c.size } : null;
+    const bytes = await fs.readFile(dir + "/" + name).catch(() => null);
+    if (!bytes) return null;
+    const size = c.size ?? bytes.length;
+    const le = bytes[0] === 0xff && bytes[1] === 0xfe, be = bytes[0] === 0xfe && bytes[1] === 0xff;
+    if (le || be) {
+      const doc = classify(abs, utf16(bytes, 2, le, LIMIT + 1), false, size);
+      doc.note = "Read as UTF-16";
+      return doc;
+    }
+    const head = Math.min(bytes.length, 8192);
+    for (let i = 0; i < head; i++) if (bytes[i] === 0) return { kind: "binary", message: "Binary file · no preview", size };
+    // UTF-8, decoded natively; a legacy code page fails here and goes to PowerShell.
+    const text = await fs.readFile(dir + "/" + name, "utf8").catch(() => null);
+    if (text === null) return null;
+    // Past LIMIT bytes it can't be edited (writeTextFile stops at 1 MiB), as PowerShell's probe said.
+    return classify(abs, text.length > LIMIT ? text.slice(0, LIMIT + 1) : text, size > LIMIT, size);
+  } finally { removeTree(dir); }
+}
+
+/** UTF-16 bytes from `at` -> a string of at most `max` chars, in native chunks. */
+function utf16(bytes, at, le, max) {
+  const n = Math.min(max, Math.floor((bytes.length - at) / 2)), parts = [];
+  if (le && (bytes.byteOffset + at) % 2 === 0) {
+    const u = new Uint16Array(bytes.buffer, bytes.byteOffset + at, n);
+    for (let i = 0; i < n; i += 8192) parts.push(String.fromCharCode.apply(null, u.subarray(i, i + 8192)));
+  } else {
+    const u = new Uint16Array(n);
+    for (let i = 0, o = at; i < n; i++, o += 2) u[i] = le ? bytes[o] | (bytes[o + 1] << 8) : (bytes[o] << 8) | bytes[o + 1];
+    for (let i = 0; i < n; i += 8192) parts.push(String.fromCharCode.apply(null, u.subarray(i, i + 8192)));
+  }
+  return parts.join("");
+}
+
+async function probePs(abs) {
   const r = await ps(PROBE(abs)).catch((e) => ({ code: -1, stderr: String(e?.message ?? e) }));
   if (r.code !== 0) return { kind: "error", message: firstLine(r.stderr) || "Cannot read this file" };
   if (r.stdout === "missing") return { kind: "missing", message: "This file no longer exists" };
@@ -231,31 +286,76 @@ export const mb = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `
 const cacheDir = () => slash(appHome()).replace(/\/+$/, "") + "/" + CACHE;
 let pruned = false;
 
-/** A new name in the cache for a copy of `abs` (new each time, so a changed image shows changed). */
+/** A new name in the cache for a copy of `abs` (new each time, so a changed image shows changed): "<hash>-<time>-<rand>[.ext]". */
 function cacheName(abs, ext) {
-  return `${fnv1a(abs)}-${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}.${ext}`;
+  return `${fnv1a(abs)}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1296).toString(36)}${ext ? "." + ext : ""}`;
 }
 
-// Copies a file into the cache; prints "<size>\n<base64 of its first 64 KiB>". "big <size>" when over the limit.
-const COPY = (src, dst, prune) => `$s = ${psq(winPath(src))}; $d = ${psq(winPath(dst))}
-if (-not (Test-Path -LiteralPath $s -PathType Leaf)) { [Console]::Out.Write('missing'); exit 0 }
-$i = Get-Item -LiteralPath $s; if ($i.Length -gt ${IMAGE_MAX}) { [Console]::Out.Write("big $($i.Length)"); exit 0 }
-$dir = Split-Path -Parent $d; New-Item -ItemType Directory -Force -Path $dir | Out-Null
-Copy-Item -LiteralPath $s -Destination $d -Force; (Get-Item -LiteralPath $d).CreationTime = Get-Date
-$f = [IO.File]::OpenRead($d); try { $b = New-Object byte[] 65536; $r = $f.Read($b, 0, 65536) } finally { $f.Close() }
-${prune ? `Get-ChildItem -LiteralPath $dir -File | Sort-Object CreationTime -Descending | Select-Object -Skip ${KEEP} | Remove-Item -Force -ErrorAction SilentlyContinue` : ""}
-[Console]::Out.Write("$($i.Length)" + [char]10 + [Convert]::ToBase64String($b, 0, $r))`;
+/**
+ * Copies one local file into `dir` (keeping its name) with robocopy: a real program, so no
+ * shell parses the path (spaces, &, ^, %, parentheses, Unicode are safe), ~25 ms against
+ * PowerShell's ~400. Files over `max` bytes are listed, not copied.
+ * -> { copied, size, missing } | null when robocopy can't run or fails.
+ */
+async function robocopy(abs, dir, max) {
+  let src = winPath(dirName(abs));
+  const name = baseName(abs);
+  if (!name) return null;
+  if (/^[a-z]:$/i.test(src)) src += "\\";   // "C:" alone is the current folder on C:
+  // /V lists a file skipped for its size; /BYTES /NC: "<size>\t<path>" per file, no localized words.
+  const r = await exec("robocopy", [src, winPath(dir), name, "/COPY:D", "/R:0", "/W:0", "/NJH", "/NJS", "/NDL", "/NC", "/NP", "/BYTES", "/V", `/MAX:${max}`])
+    .catch(() => null);
+  if (!r) return null;
+  if (r.code === 16) return { copied: false, size: null, missing: true };   // no such folder
+  if (r.code >= 8) return null;
+  const m = /^\s*(\d+)\t/m.exec(r.stdout);
+  if (!m) return { copied: false, size: null, missing: true };
+  return { copied: (r.code & 1) === 1, size: Number(m[1]), missing: false };
+}
+
+/** Deletes a cache entry (a file, or a folder and what's in it). Never throws. */
+async function removeTree(path, depth = 0) {
+  try { await fs.unlink(path); return; } catch {}
+  if (depth > 16) return;
+  try {
+    for (const e of await fs.readdir(path, { withFileTypes: true })) await removeTree(path + "/" + e.name, depth + 1);
+    await fs.rmdir(path);
+  } catch {}
+}
+
+/** Keeps the newest KEEP cache entries (once per load of this module), in the background. */
+function prune() {
+  if (pruned) return;
+  pruned = true;
+  (async () => {
+    const dir = cacheDir();
+    const names = await fs.readdir(dir).catch(() => []);
+    if (names.length <= KEEP) return;
+    // Entries an older version made have no "-<time>-" part: oldest.
+    const at = (n) => { const m = /^[0-9a-f]{8}-([0-9a-z]+)-/.exec(n); return m ? parseInt(m[1], 36) : 0; };
+    const old = names.map((n) => [at(n), n]).sort((a, b) => b[0] - a[0]).slice(KEEP);
+    for (const [, n] of old) await removeTree(dir + n);
+  })().catch(() => {});
+}
+
+/**
+ * The first bytes of a cached copy (for its pixel size); null when the app's folder can't be read.
+ * fs/promises throws at once (not a rejection) for a path outside its read roots, so: try.
+ */
+async function headOf(path) {
+  try { return (await fs.readFile(path)).subarray(0, 65536); } catch { return null; }
+}
 
 async function localImage(abs) {
-  const ext = extension(abs), name = cacheName(abs, ext);
+  const ext = extension(abs);
   if (!isWindows(null)) return remoteImage(abs, null);
-  const r = await ps(COPY(abs, cacheDir() + name, !pruned)).catch((e) => ({ code: -1, stderr: String(e?.message ?? e) }));
-  if (r.code !== 0) return { kind: "error", message: firstLine(r.stderr) || "Cannot read this image" };
-  pruned = true;
-  if (r.stdout === "missing") return { kind: "missing", message: "This file no longer exists" };
-  if (r.stdout.startsWith("big ")) return { kind: "error", message: `Image too large to preview (${mb(Number(r.stdout.slice(4)))})` };
-  const nl = r.stdout.indexOf("\n"), size = Number(r.stdout.slice(0, nl));
-  return { kind: "image", src: CACHE + name, size, ...(imageSize(unbase64(r.stdout.slice(nl + 1)), ext) ?? {}) };
+  const key = cacheName(abs, ""), c = await robocopy(abs, cacheDir() + key, IMAGE_MAX);
+  if (!c) return { kind: "error", message: "Cannot read this image" };
+  if (c.missing) { removeTree(cacheDir() + key); return { kind: "missing", message: "This file no longer exists" }; }
+  if (!c.copied) { removeTree(cacheDir() + key); return { kind: "error", message: `Image too large to preview (${mb(c.size)})` }; }
+  prune();
+  const rel = key + "/" + baseName(abs);
+  return { kind: "image", src: CACHE + rel, size: c.size, ...(imageSize(await headOf(cacheDir() + rel), ext) ?? {}) };
 }
 
 /** The bytes of a file on another machine (or here, off Windows), through base64. */
@@ -277,10 +377,11 @@ async function remoteImage(abs, on, read = null) {
     await fs.mkdir(cacheDir(), { recursive: true });
     await fs.writeFile(cacheDir() + name, bytes);
   } catch (e) { return { kind: "error", message: `Cannot cache this image: ${String(e?.message ?? e)}` }; }
+  prune();
   return { kind: "image", src: CACHE + name, size: bytes.length, ...(imageSize(bytes.subarray(0, 65536), ext) ?? {}) };
 }
 
-/** An image as of a commit: git archive into the cache, then tar out (Windows ships bsdtar). */
+/** An image as of a commit: git archive into the cache, then tar out (Windows ships bsdtar), drawn where tar put it. */
 async function revImage({ on, abs, rev, repo, size }) {
   if (size > (on ? REMOTE_IMAGE_MAX : IMAGE_MAX)) return { kind: "error", message: `Image too large to preview (${mb(size)})` };
   const { cwd, spec } = revSpec(abs, rev, repo);
@@ -296,21 +397,18 @@ async function revImage({ on, abs, rev, repo, size }) {
   }
   if (top && abs.toLowerCase().startsWith(top.toLowerCase() + "/")) rel = abs.slice(top.length + 1);
   if (!rel) return { kind: "error", message: "Cannot find this image in its repository" };
-  const key = `${fnv1a(abs + "@" + rev)}-${Date.now().toString(36)}`, dir = cacheDir() + key, tar = dir + ".tar";
+  const key = cacheName(abs + "@" + rev, ""), dir = cacheDir() + key, tar = dir + ".tar";
   try { await fs.mkdir(dir, { recursive: true }); } catch (e) { return { kind: "error", message: `Cannot cache this image: ${String(e?.message ?? e)}` }; }
   const a = await gitRead(["archive", "--format=tar", "-o", tar, rev, "--", rel], top).catch(() => null);
-  if (!a || a.code !== 0) return { kind: "error", message: firstLine(a?.stderr) || "Cannot read this image at that commit" };
+  if (!a || a.code !== 0) { removeTree(dir); return { kind: "error", message: firstLine(a?.stderr) || "Cannot read this image at that commit" }; }
   let x = null;
   for (const t of ["C:\\Windows\\System32\\tar.exe", "tar"]) {
     x = await exec(t, ["-xf", winPath(tar), "-C", winPath(dir)]).catch(() => null);
     if (x?.code === 0) break;
   }
-  fs.unlink(tar).catch(() => {});
-  if (!x || x.code !== 0) return { kind: "error", message: firstLine(x?.stderr) || "Cannot unpack this image (tar)" };
-  // Moved next to the other copies, so the cache prune sees it.
-  const ext = extension(abs), name = cacheName(abs + "@" + rev, ext);
-  const r = await ps(COPY(dir + "/" + rel, cacheDir() + name, true) + `; Remove-Item -LiteralPath ${psq(winPath(dir))} -Recurse -Force -ErrorAction SilentlyContinue`).catch(() => null);
-  if (!r || r.code !== 0 || !/^\d+\n/.test(r.stdout)) return { kind: "error", message: firstLine(r?.stderr) || "Cannot read this image at that commit" };
-  const nl = r.stdout.indexOf("\n");
-  return { kind: "image", src: CACHE + name, size, ...(imageSize(unbase64(r.stdout.slice(nl + 1)), ext) ?? {}) };
+  removeTree(tar);
+  if (!x || x.code !== 0) { removeTree(dir); return { kind: "error", message: firstLine(x?.stderr) || "Cannot unpack this image (tar)" }; }
+  // The folder is one cache entry, pruned as one.
+  prune();
+  return { kind: "image", src: CACHE + key + "/" + rel, size, ...(imageSize(await headOf(dir + "/" + rel), extension(abs)) ?? {}) };
 }

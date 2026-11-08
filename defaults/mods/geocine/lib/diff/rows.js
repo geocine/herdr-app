@@ -61,50 +61,81 @@ export function markWords(lines) {
   }
 }
 
-const columns = (text) => Math.min(MAX_COLUMNS, expandTabs(text).length);
+// A line's width in columns, tabs expanded, cut at MAX_COLUMNS (kept on the line).
+function columns(line) {
+  if (line.cols === undefined) {
+    const text = line.text;
+    line.cols = Math.min(MAX_COLUMNS, text.indexOf("\t") < 0 ? text.length : expandTabs(text).length);
+  }
+  return line.cols;
+}
 
 /**
  * The list's items for files: a header each and, unless folded, its hunks: a header row per hunk
  * and its lines in runs of RUN. Notes stand for what has no lines (binary, renamed, too large).
- * open(file) says whether a file is unfolded. → { items, width: [unified, left, right], digits }
+ * open(file) says whether a file is unfolded; ready(file, index) false leaves a "Loading…" note
+ * in place of its lines. → { items, most: [unified, left, right], digits }
+ * A file's own items are built once per layout (kept on the file), so folding one file or
+ * marking it viewed costs a walk over the files, not over every line again.
  */
-export function buildItems(files, { open, split }) {
-  const items = [];
-  let most = [0, 0, 0], digits = 1;
-  for (const [index, file] of files.entries()) {
-    const key = fileKey(file, index);
+export function buildItems(files, { open, split, ready = () => true }) {
+  const items = [], most = [0, 0, 0];
+  let digits = 1;
+  for (let index = 0; index < files.length; index++) {
+    const file = files[index], key = fileKey(file, index);
     items.push({ key: `f:${key}`, kind: "file", file, index, size: FILE });
     if (!open(file)) continue;
-    const lines = file.hunks.reduce((n, h) => n + h.lines.length, 0);
-    if (file.large && !file.shown) { items.push({ key: `l:${key}`, kind: "note", file, text: `Large diff · ${lines.toLocaleString("en-US")} lines · click to show`, action: "show", size: NOTE }); continue; }
-    if (file.binary) { items.push({ key: `n:${key}`, kind: "note", file, text: "Binary file · no text diff", size: NOTE }); continue; }
-    if (!file.hunks.length) {
-      const text = file.status === "R" ? "Renamed without changes" : file.status === "C" ? "Copied without changes" : file.status === "T" ? "File type changed" : file.oldMode && file.newMode && file.oldMode !== file.newMode ? `Mode ${file.oldMode} → ${file.newMode}` : "No content changes";
-      items.push({ key: `n:${key}`, kind: "note", file, text, size: NOTE });
-      continue;
-    }
-    const solo = split && (file.status === "A" || file.status === "D");
-    const kind = !split ? "rows" : solo ? "solo" : "pairs";
-    for (const [h, hunk] of file.hunks.entries()) {
-      items.push({ key: `h:${key}:${h}`, kind: "hunk", file, hunk, size: HUNK });
-      if (!hunk.marked) { markWords(hunk.lines); hunk.marked = true; }
-      const last = hunk.lines[hunk.lines.length - 1];
-      digits = Math.max(digits, String(Math.max(hunk.oldStart + hunk.oldLines, hunk.newStart + hunk.newLines, last?.old ?? 0, last?.new ?? 0)).length);
-      const rows = kind === "pairs" ? pairRows(hunk.lines) : hunk.lines;
-      for (let r = 0; r < rows.length; r += RUN) {
-        const run = rows.slice(r, r + RUN);
-        items.push({ key: `r:${key}:${h}:${r}`, kind, file, lines: run, size: run.length * ROW });
-        for (const row of run) {
-          if (kind === "pairs") {
-            if (row.left) most[1] = Math.max(most[1], columns(row.left.text));
-            if (row.right) most[2] = Math.max(most[2], columns(row.right.text));
-          } else most[0] = Math.max(most[0], columns(row.text));
-        }
-      }
-    }
-    if (file.truncated) items.push({ key: `t:${key}`, kind: "note", file, text: "Diff cut here: too many lines", size: NOTE });
+    // ready(file, index) false: its lines aren't worked out yet; a note holds the place.
+    if (!ready(file, index)) { items.push({ key: `w:${key}`, kind: "note", file, text: "Loading…", size: NOTE }); continue; }
+    const body = fileItems(file, key, split);
+    for (const item of body.items) items.push(item);
+    for (let k = 0; k < 3; k++) if (body.most[k] > most[k]) most[k] = body.most[k];
+    if (body.digits > digits) digits = body.digits;
   }
   return { items, most, digits };
+}
+
+/** True when the file's open body is built already for this layout (no line work left). */
+export const isBuilt = (file, index, split) => file.built?.tag === bodyTag(file, fileKey(file, index), split);
+const bodyTag = (file, key, split) => `${split ? 1 : 0}:${file.large && !file.shown ? 1 : 0}:${key}`;
+
+// One unfolded file's items after its header, with its widest line and its longest number.
+export function fileItems(file, key, split) {
+  const tag = bodyTag(file, key, split);
+  if (file.built?.tag === tag) return file.built;
+  const items = [], most = [0, 0, 0];
+  let digits = 1;
+  const done = () => (file.built = { tag, items, most, digits });
+  const lines = file.hunks.reduce((n, h) => n + h.lines.length, 0);
+  if (file.large && !file.shown) { items.push({ key: `l:${key}`, kind: "note", file, text: `Large diff · ${lines.toLocaleString("en-US")} lines · click to show`, action: "show", size: NOTE }); return done(); }
+  if (file.binary) { items.push({ key: `n:${key}`, kind: "note", file, text: "Binary file · no text diff", size: NOTE }); return done(); }
+  if (!file.hunks.length) {
+    const text = file.status === "R" ? "Renamed without changes" : file.status === "C" ? "Copied without changes" : file.status === "T" ? "File type changed" : file.oldMode && file.newMode && file.oldMode !== file.newMode ? `Mode ${file.oldMode} → ${file.newMode}` : "No content changes";
+    items.push({ key: `n:${key}`, kind: "note", file, text, size: NOTE });
+    return done();
+  }
+  const solo = split && (file.status === "A" || file.status === "D");
+  const kind = !split ? "rows" : solo ? "solo" : "pairs";
+  for (let h = 0; h < file.hunks.length; h++) {
+    const hunk = file.hunks[h];
+    items.push({ key: `h:${key}:${h}`, kind: "hunk", file, hunk, size: HUNK });
+    if (!hunk.marked) { markWords(hunk.lines); hunk.marked = true; }
+    const last = hunk.lines[hunk.lines.length - 1];
+    digits = Math.max(digits, String(Math.max(hunk.oldStart + hunk.oldLines, hunk.newStart + hunk.newLines, last?.old ?? 0, last?.new ?? 0)).length);
+    const rows = kind === "pairs" ? pairRows(hunk.lines) : hunk.lines;
+    for (let r = 0; r < rows.length; r += RUN) {
+      const run = rows.slice(r, r + RUN);
+      items.push({ key: `r:${key}:${h}:${r}`, kind, file, lines: run, size: run.length * ROW });
+      if (kind === "pairs") {
+        for (const row of run) {
+          if (row.left && columns(row.left) > most[1]) most[1] = row.left.cols;
+          if (row.right && columns(row.right) > most[2]) most[2] = row.right.cols;
+        }
+      } else for (const row of run) if (columns(row) > most[0]) most[0] = row.cols;
+    }
+  }
+  if (file.truncated) items.push({ key: `t:${key}`, kind: "note", file, text: "Diff cut here: too many lines", size: NOTE });
+  return done();
 }
 
 // A file's identity in the list: its path (and its place, should a diff name a path twice).
