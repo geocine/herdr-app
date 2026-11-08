@@ -47,6 +47,7 @@ Done. It installs the app **and** the core.
 - Three panels beside your terminals, one click each in the tab bar:
   - **Files**: your project as a tree. Git colors, search, right-click menu.
     Click a file to read it: Markdown, code with colors, images.
+    The line you're on shows who changed it last, like GitLens; full mode adds a blame column.
   - **Changes**: what changed, as diffs. Stage, unstage, discard, commit.
   - **Graph**: every branch and commit. Checkout, merge, rebase and more.
     Click a commit to see its diff.
