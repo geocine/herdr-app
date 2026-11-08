@@ -97,8 +97,14 @@ It reloads live: `watchFolder` locally, polling for remote machines.
 For code files when `rev` is null: show git change marks against HEAD (a gutter and/or an
 overview ruler), as file-preview does.
 
-Find in document: `Ctrl+F` / `/`, a match count, next and previous. Zoom: 70–200%, per
-view in localStorage.
+Find in document: `Ctrl+F` / `/`, a match count, next and previous. In a code file it runs in
+the Editor (`EditorState.search`): matches highlighted in the text, the current one scrolled to.
+Zoom: 70–200%, per view in localStorage.
+
+Blame (`lib/preview/blame.js`): `git blame --porcelain` in the background once the file shows,
+again only when its text or git status changes; never before the text is on screen. The cursor
+line gets a GitLens-like note (`EditorState.set_line_hints`); full mode adds a blame column (the
+history button toggles it), for files up to 1000 lines. Over 20000 lines: no blame.
 
 ### Diff — `lib/diff/index.js`
 

@@ -3155,6 +3155,11 @@ const BASE: &str = r#"  /** A row. */
     search_go(index: number): boolean;
     /** HERDR: ends the search: the highlights go. */
     search_close(): void;
+    /**
+     * HERDR: a note per row (index = row from 0), like GitLens' blame: the cursor row's
+     * note is drawn dimmed after the end of its line. `null` or `[]` removes them.
+     */
+    set_line_hints(hints: string[] | null): void;
     on(event: "change" | "submit" | "focus" | "blur" | "paste_other", handler: (event: InputEvent, cx: Context) => void): boolean;
     release(): boolean;
   }
