@@ -681,7 +681,7 @@ fn after_update_managed(status: Result<serde_json::Value, String>) -> bool {
     match status {
         Ok(status) => {
             let text = |key: &str| status[key].as_str().map(str::to_owned);
-            set_core(text("version").map(|v| v.trim_start_matches("hc ").to_owned()), text("installed_by"));
+            set_core(text("version").map(|v| v.trim_start_matches("hc ").to_owned()), text("installed_by"), core().build);
             core().managed.is_some()
         }
         Err(e) => {

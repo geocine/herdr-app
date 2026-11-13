@@ -3077,7 +3077,7 @@ impl AppWindow {
                         self.model.active = Some(id.clone());
                         Ok(json!({ "space": id, "existing": true }))
                     }
-                    None => self.new_space("", Some(folder.to_owned()), None, None, None, None, window),
+                    None => self.new_space("", Some(folder.to_owned()), None, None, None, None, true, window),
                 };
                 self.answer(r);
             }
