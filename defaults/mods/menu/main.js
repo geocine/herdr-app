@@ -1,16 +1,27 @@
 // Context menus (Herdr's items). Opened as a popup with
 // props { tab: "pane" | "tab" | "space" | "global", target }.
 // ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args];
-// a command "worktree" opens the worktree dialog instead.
+// a command "worktree" opens the worktree dialog instead, "reveal" shows a folder in the system's
+// file manager (Explorer, Finder).
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec } from "herdr";
+import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec, window as win } from "herdr";
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(s) {
   const tabs = new Set((s.tabs ?? []).map((c) => c.id));
   return panes().find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
+}
+
+const platform = () => win()?.platform ?? "linux";
+const revealLabel = () => (platform() === "macos" ? "Reveal in Finder" : platform() === "windows" ? "Reveal in Explorer" : "Open folder");
+
+// Opens a folder of this computer in the file manager.
+function reveal(folder) {
+  if (!folder) return;
+  if (platform() === "windows") exec("explorer.exe", [String(folder).replace(/\//g, "\\")]).catch(() => {});
+  else exec(platform() === "macos" ? "open" : "xdg-open", [folder]).catch(() => {});
 }
 
 // A space's checkout: "main" (a repo's own), "linked" (a worktree), or null.
@@ -60,13 +71,17 @@ function items(p, git) {
         ["New tab", "tab.new", { space: tg.space }],
         ["Close", "tab.close", { id: tg.id }],
       ];
-    case "space":
+    case "space": {
+      const space = spaces().find((s) => s.id === tg.id);
       return [
         ["Rename", "space.rename", { id: tg.id }],
+        // This computer's spaces: their folder now (the first terminal's), as the worktree items use.
+        ...(space && !space.machine && place(space) ? [[revealLabel(), "reveal", { folder: place(space) }]] : []),
         ...(git ? [["New worktree", "worktree", { space: tg.id, action: "new" }], ["Open worktree", "worktree", { space: tg.id, action: "open" }]] : []),
         ...(git === "linked" ? [["Remove worktree", "worktree", { space: tg.id, action: "remove" }]] : []),
         ["Close", "space.close", { id: tg.id }],
       ];
+    }
     default:
       return [
         ["New space", "space.new", {}],
@@ -80,7 +95,7 @@ function items(p, git) {
 }
 
 function menuIcon(command) {
-  const name = command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
+  const name = command.endsWith(".close") ? "x" : command.endsWith(".rename") ? "square-pen" : command.endsWith(".new") ? "plus" : command === "worktree" ? "git-branch" : command === "reveal" ? "folder" : command === "app.help" ? "terminal" : command === "app.theme" ? "settings" : command === "pane.split" ? "panel-right" : command === "pane.zoom" ? "square" : "terminal";
   return `mods/workspace-chrome/${name}.svg`;
 }
 
@@ -112,7 +127,8 @@ export default class Menu extends View {
     const it = items(props(), this.git)[i];
     if (!it) return;
     closeOverlay(props()?.overlay);
-    if (it[1] === "worktree") openOverlay({ mod: "worktree", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: it[2] });
+    if (it[1] === "reveal") reveal(it[2].folder);
+    else if (it[1] === "worktree") openOverlay({ mod: "worktree", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: it[2] });
     else run(it[1], it[2]);
   }
 
