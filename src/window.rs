@@ -111,7 +111,12 @@ pub fn shell() -> String {
 }
 
 fn unix_agent_argv(sh: String, cmd: Vec<String>, login: bool) -> Vec<String> {
-    let name = std::path::Path::new(&sh).file_name().and_then(|s| s.to_str());
+    // Windows: Git Bash is `bash.exe` (any case), the same shell.
+    let name = std::path::Path::new(&sh).file_name().and_then(|s| s.to_str()).map(|n| {
+        let n = n.to_ascii_lowercase();
+        n.strip_suffix(".exe").map(str::to_owned).unwrap_or(n)
+    });
+    let name = name.as_deref();
     if !matches!(name, Some("sh" | "bash" | "zsh" | "dash" | "ksh" | "fish")) {
         // Other shells cannot parse our wrapper: sh runs the command on the app's PATH, which the
         // installed check searches when the shell can't run it (`programs::installed_here`),
@@ -6348,7 +6353,7 @@ mod tests {
     fn agent_commands_keep_arguments_out_of_shell_source() {
         let cmd = vec!["agent".to_owned(), "a 'quoted' task; $(not-a-command)\nnext line".to_owned(), "".to_owned()];
         for login in [false, true] {
-            for sh in ["/bin/bash", "/bin/zsh", "/bin/sh", "/bin/dash", "/bin/fish"] {
+            for sh in ["/bin/bash", "/bin/zsh", "/bin/sh", "/bin/dash", "/bin/fish", r"C:\Program Files\Git\bin\bash.exe", r"C:\msys64\usr\bin\bash.exe"] {
                 let run = super::unix_agent_argv(sh.into(), cmd.clone(), login);
                 assert_eq!(run[0], sh);
                 assert_eq!(run[1], if login { "-lic" } else { "-ic" });
