@@ -4,7 +4,7 @@
 //
 // Keys (keys.json, "geocine.<command>"): sidebar (Ctrl+B), full (Ctrl+Shift+Enter: the panel
 // grown over the terminals, or back), changes (Ctrl+Shift+D), graph (Ctrl+Shift+G), goto
-// (Ctrl+P in Geocine: the Files view's search), open (a file or change from the command
+// (Ctrl+Shift+R: the Files view's search), open (a file or change from the command
 // palette, in full mode: shared "geocine.open"). A view's key opens it, in full
 // mode when that is on; pressed again on the view shown, it closes the panel.
 import { View, div, svg, image } from "gpui-kit";
@@ -14,7 +14,7 @@ import { ui } from "../lib/ui.js";
 import { find, expanded, expand, collapse, toggleFull } from "../lib/nav.js";
 
 const PANELS = [
-  { id: "files", label: "Files", icon: ui("files"), key: "Ctrl+P" },
+  { id: "files", label: "Files", icon: ui("files"), key: "Ctrl+Shift+R" },
   { id: "changes", label: "Changes", icon: ui("changes"), key: "Ctrl+Shift+D" },
   { id: "graph", label: "Graph", icon: ui("git-graph"), key: "Ctrl+Shift+G" },
 ];

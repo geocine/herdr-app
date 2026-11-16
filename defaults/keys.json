@@ -64,10 +64,8 @@
     "ctrl-b": "geocine.sidebar",
     "ctrl-shift-enter": "geocine.full",
     "ctrl-shift-d": "geocine.changes",
-    "ctrl-shift-g": "geocine.graph"
-  },
-  "mod:geocine": {
-    "ctrl-p": "geocine.goto"
+    "ctrl-shift-g": "geocine.graph",
+    "ctrl-shift-r": "geocine.goto"
   },
   "terminal": {
     "ctrl-backspace": "send:\u0017",

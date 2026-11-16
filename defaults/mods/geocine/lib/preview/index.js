@@ -7,6 +7,7 @@
 // Mount: cx.new(Preview, { on, root, path, rev, repoTop, wide, onOpen }); update: entity.set_props().
 // Ported from bohumil/herdr-file-preview (MIT) and made to work on Windows. See NOTICE.md.
 import { View, div, svg, image } from "gpui-kit";
+import { expandTabs } from "../tabs.js";
 import { v_flex, h_flex, Editor, EditorState, TextView, Scrollbar, InputState, Input } from "gpui-base";
 import { theme, settings, watchFolder, exec, readTextFile, writeTextFile } from "herdr";
 import { SIZE, iconButton, textButton, empty, ui, ago } from "../ui.js";
@@ -330,7 +331,7 @@ export default class Preview extends View {
     if (doc.kind === "text") {
       // Crossing the color limit makes a new state; else the text goes in place (colors re-parse).
       if (!this.code || this.codeBare !== this.tooBig(doc.text)) return false;
-      this.code.set_value(doc.text);
+      this.code.set_value(this.shownText(doc));
       return true;
     }
     if (doc.kind !== "markdown") return false;
@@ -345,7 +346,7 @@ export default class Preview extends View {
         this.blocks[i] = b;
         return;
       }
-      if (old.text !== b.text) old.state.set_value(b.text);
+      if (old.text !== b.text) old.state.set_value(expandTabs(b.text));
       old.text = b.text; old.lines = b.lines; old.vis = null; old.start = b.start; old.end = b.end;
     });
     return true;
@@ -430,7 +431,7 @@ export default class Preview extends View {
   codeState(color = true) {
     const language = color ? lang.forPath(this.p.path) : null;
     const state = EditorState.new({ readonly: true, font_family: settings().font_family, font_size: this.codeFont, syntax: syntax(theme()),
-      ...(language ? { language } : {}), soft_wrap: this.wrapOn(), value: this.doc?.text ?? "" });
+      ...(language ? { language } : {}), soft_wrap: this.wrapOn(), value: this.shownText(this.doc) });
     this.findInCode(state);
     if (this.hintsNow() && this.doc?.kind === "text") state.set_line_hints(this.hintsNow());
     return state;
@@ -455,7 +456,14 @@ export default class Preview extends View {
   /** wrapAs: the fence's language for soft wrap, when it's drawn plain for now. */
   fenceState(value, language, wrapAs = language) {
     return EditorState.new({ readonly: true, font_family: settings().font_family, font_size: this.codeFont, syntax: syntax(theme()),
-      ...(language ? { language } : {}), value, line_numbers: false, folding: false, soft_wrap: lang.wraps(wrapAs) });
+      ...(language ? { language } : {}), value: expandTabs(value), line_numbers: false, folding: false, soft_wrap: lang.wraps(wrapAs) });
+  }
+
+  /** A text doc's text as the read-only view shows it (tabs expanded), worked out once per doc. */
+  shownText(doc) {
+    if (!doc?.text) return "";
+    if (doc.shown === undefined) doc.shown = expandTabs(doc.text);
+    return doc.shown;
   }
 
   /** Soft wrap of the code view: the person's toggle, and always for JSON. */
