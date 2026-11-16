@@ -3,11 +3,14 @@
 // order, word starts and runs rank higher. Empty: recent first, then every
 // group. Choices are entries of their own ("Layout: Zen"); commands that need
 // a name ask for it. Enter runs, ↑/↓ move, Esc closes.
+// With the Geocine panel (the fork's layout): the panel's own entries, and while typing the
+// focused terminal's files and changes, each opening in full mode (places.js).
 // The app's own mod: rewritten from the binary on every start.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { commands, layouts, keys, run, theme, props, closeOverlay, openOverlay, shared, window as win } from "herdr";
+import { panelViews, loadPlaces, bestOf, openPlace } from "./places.js";
 
 // The list keeps one height while you move: rows and group titles have fixed
 // heights, and the window shows as many as fit in LIST_H.
@@ -17,7 +20,15 @@ const SHOWN = 10;
 const ROW_H = 32;
 const HEAD_H = 26;
 const LIST_H = SHOWN * ROW_H;
-const GROUPS = ["Recent", "Tab", "Pane", "Space", "Layout", "Terminal", "Agent", "Window", "App"];
+const GROUPS = ["Recent", "Panel", "Tab", "Pane", "Space", "Layout", "Terminal", "Agent", "Window", "App"];
+
+// The Geocine panel's entries, when the layout has it: [command, view it needs, title, keywords].
+const PANEL = [
+  ["geocine.goto", "files", "Go to file", "open find search quick"],
+  ["geocine.full", null, "Full mode", "panel expand maximize grow"],
+  ["geocine.changes", "changes", "Show changes", "diff uncommitted git status"],
+  ["geocine.graph", "graph", "Show graph", "commits history log branches"],
+];
 
 // The palette's names for commands: [command, args, group, title, keywords].
 const NAMED = [
@@ -83,6 +94,8 @@ function entries() {
   const list = NAMED.filter(([n]) => known.has(n))
     .filter(([n]) => !(mac && n.startsWith("window.")))
     .map(([name, args, group, title, words]) => ({ name, args, group, title, words }));
+  const views = panelViews();
+  if (views.size) for (const [name, view, title, words] of PANEL) if (!view || views.has(view)) list.push({ name, args: {}, group: "Panel", title, words });
   for (const l of layouts()) {
     const t = { main: "Herdr", terminals: "Terminals", win98: "Herdr 98" }[l] ?? l.charAt(0).toUpperCase() + l.slice(1);
     list.push({ name: "layout.switch", args: { name: l }, group: "Layout", title: `Layout: ${t}`, words: `look ${l}` });
@@ -98,9 +111,11 @@ function entries() {
 
 // The key bound to an entry: `name` or `name:value` in keys.json.
 function keyOf(e, bound) {
+  if (e.place) return null;
   const v = Object.values(e.args)[0];
   const want = v === undefined ? e.name : `${e.name}:${v}`;
-  const k = bound.find((b) => b.section === "global" && b.action === want);
+  // The panel's keys live in the layout's and the mod's sections.
+  const k = bound.find((b) => (b.section === "global" || b.section.startsWith("layout:") || b.section.startsWith("mod:")) && b.action === want);
   return k ? k.keys : null;
 }
 
@@ -141,6 +156,12 @@ export default class Palette extends View {
     this.scroll = 0;
     this.recent = JSON.parse(localStorage.getItem("recent") ?? "[]");
     this.handle = cx.focus_handle();
+    // Files and changes, read in the background (the Geocine panel only).
+    this.places = null; this.fileMemo = {}; this.changeMemo = {};
+    if (panelViews().size) cx.spawn(async (cx) => {
+      try { this.places = await loadPlaces(); } catch { this.places = null; }
+      if (this.places && this.query) cx.notify();
+    });
   }
 
   close() {
@@ -149,6 +170,7 @@ export default class Palette extends View {
 
   go(e) {
     if (!e) return;
+    if (e.place) { this.close(); openPlace(e.place, e.f, this.places); return; }
     this.recent = [e.id, ...this.recent.filter((r) => r !== e.id)].slice(0, 20);
     localStorage.setItem("recent", JSON.stringify(this.recent));
     this.close();
@@ -173,7 +195,7 @@ export default class Palette extends View {
       return [...recent.map((e) => ({ e, head: "Recent" })), ...[...rest, ...others].map((e) => ({ e, head: e.group }))];
     }
     const rank = (e) => this.recent.indexOf(e.id);
-    return all
+    const found = all
       .map((e) => {
         const title = fuzzy(q, e.title);
         const more = fuzzy(q, `${e.group} ${e.title} ${e.name} ${e.words}`);
@@ -182,6 +204,23 @@ export default class Palette extends View {
       })
       .filter(Boolean)
       .sort((a, b) => b.score - a.score || (rank(a.e) < 0 ? 99 : rank(a.e)) - (rank(b.e) < 0 ? 99 : rank(b.e)));
+    // One ranking: a file whose name matches beats a command matched only loosely.
+    const places = this.placeRows(q);
+    return places.length ? [...found, ...places].sort((a, b) => b.score - a.score) : found;
+  }
+
+  // The files and changes matching q, after the commands: changes first (fewer, and likelier
+  // what you're after), then files. A file also in the changes shows once, as the change.
+  placeRows(q) {
+    const pl = this.places;
+    if (!pl) return [];
+    const changes = bestOf(pl.changes, q, fuzzy, 5, this.changeMemo);
+    const changed = new Set(changes.map((c) => c.f.path));
+    const prefix = pl.root.toLowerCase().startsWith(pl.top.toLowerCase() + "/") ? pl.root.slice(pl.top.length + 1) + "/" : "";
+    const files = bestOf(pl.files, q, fuzzy, 8, this.fileMemo).filter((x) => !changed.has(prefix + x.f.path)).slice(0, 7);
+    const row = (place, x, group) => ({ e: { place, f: x.f, name: "", args: {}, group, title: x.f.base, detail: x.f.dir, words: "", id: `${place}:${x.f.path}` }, score: x.score, hits: x.hits });
+    const what = { M: "modified", A: "added", D: "deleted", R: "renamed", C: "copied", "?": "new", U: "conflict", T: "type changed" };
+    return [...changes.map((x) => row("change", x, `Change · ${what[x.f.section === "conflicts" ? "U" : x.f.status] ?? "changed"}`)), ...files.map((x) => row("file", x, "File"))];
   }
 
   title(t, text, hits, on) {
@@ -258,7 +297,9 @@ export default class Palette extends View {
           .when(on, (el) => el.bg(t.selected))
           .hover((s) => s.bg(t.hover))
           .on_click(() => this.go(r.e))
-          .child(div().flex_1().min_w(0).child(this.title(t, r.e.title, r.hits, on)))
+          .child(h_flex().flex_1().min_w(0).gap(8).items_center().overflow_hidden()
+            .child(div().flex_none().child(this.title(t, r.e.title, r.hits, on)))
+            .when(Boolean(r.e.detail), (el) => el.child(div().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(r.e.detail))))
           .when(Boolean(this.query), (el) => el.child(div().text_size(11.5).text_color(t.dim).child(r.e.group)))
           .when(Boolean(k), (el) => el.child(key(k))),
       );
@@ -315,7 +356,7 @@ export default class Palette extends View {
                 cx.notify();
               })
               .children(fixed ? list : [v_flex().children(list)])
-          : div().px(16).py(14).text_size(13).text_color(t.dim).child(`Nothing matches "${this.query}". Places are in the picker.`),
+          : div().px(16).py(14).text_size(13).text_color(t.dim).child(`Nothing matches "${this.query}". Spaces and tabs are in the picker.`),
       );
   }
 }
