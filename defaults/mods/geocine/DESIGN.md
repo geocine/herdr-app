@@ -1,7 +1,7 @@
 # Geocine mod
 
 The geocine fork's default layout draws its tab bar and side panel with this mod: **Files**,
-**Changes** and **Graph**, each with a **full mode** (an overlay almost as big as the window,
+**Changes** and **Graph**, each with a **full mode** (the panel grown over the terminals,
 list and detail side by side). It is one mod so the views share their git, icon, diff and
 preview code and look like one tool. Credits for the parts ported from other projects are in
 `NOTICE.md`.
@@ -16,12 +16,12 @@ lib/ui.js          sizes and shared components (header, rows, buttons, empty sta
 lib/git.js         gitRead / gitWrite / git / repoOf, STATUS colors (finds Git for Windows)
 lib/where.js       location() of the focused terminal, path helpers
 lib/icons.js       iconFor(rel, dir, open): Symbols file icons (icons/files/)
-lib/nav.js         openFull(tab, start), closeFull()
+lib/nav.js         openFull(tab, start), closeFull(), toggleFull(), expand/collapse the panel
 lib/inline.js      runs a view inside another's render (live updates reach it)
 lib/preview/       the Preview component (read and edit a file)
 lib/diff/          parseDiff / loadDiff and the Diff component
 views/tabs.js      the tab bar with the panel buttons
-views/full.js      full mode
+views/full.js      full mode as an overlay (layouts without the geocine panel)
 views/files/       the explorer
 views/changes/     uncommitted changes
 views/graph/       the commit graph, commit details and git actions
@@ -53,8 +53,26 @@ Full mode (wide):
 - The detail is on the right.
 
 The header's expand button (icon `expand`) calls `openFull("<view>")` from `lib/nav.js`.
-In full mode the same spot shows a collapse button that calls `closeFull()`. Read
-`props().full` from the herdr import (router props) or your own `full` prop.
+In full mode the same spot shows a collapse button that calls `closeFull()`. Read your own
+`full` prop (or `inFull()`, true in the overlay copy).
+
+In the geocine layout full mode is the side panel itself: `expand()` hides the terminals
+(`main`, still running) and gives the panel all the width; `collapse()` puts back its width
+from before. The same copy stays, so nothing reloads and the selection, open file and scroll
+stay. `main.js` passes the panel view `wide`/`full` through `update(props)` when it grows or
+shrinks (a view re-lays out in place there) and gives it the keyboard. The tab bar
+(`views/tabs.js`) remembers, per space, which panel is open and whether it is grown. Other
+layouts get the overlay (`views/full.js`), a copy of its own.
+
+Keys (`defaults/keys.json`):
+
+- `Ctrl+Shift+Enter` (`geocine.full`): full mode on or off.
+- `Ctrl+Shift+D` / `Ctrl+Shift+G` (`geocine.changes` / `geocine.graph`): show Changes / Graph
+  (grown, when full mode is on); again on the view shown closes the panel.
+- `Ctrl+P` / `Ctrl+Shift+P` while Geocine has the keyboard (`mod:geocine`, `geocine.goto`):
+  go to file, the Files view's search. A leading `>` hands over to the command palette.
+- `Esc` in full mode with nothing left to close (the list has the keyboard): back to the
+  terminals. A terminal tab's pill does the same, showing that tab.
 
 The view follows the focused terminal: use `location()` and `locationKey()` from
 `lib/where.js`, and `repoOf(cwd)`. When the focus moves to another folder or repo, reload.

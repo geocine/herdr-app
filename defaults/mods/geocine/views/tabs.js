@@ -1,25 +1,21 @@
 // The Geocine tab bar: Herdr's own tab pills (from the shipped `tabs` mod), then the side
 // panel's buttons (Files, Changes, Graph, whichever the layout's "panel-body" stack has and
-// Settings leaves on) and full mode. The open panel is remembered per space.
+// Settings leaves on) and full mode. The open panel, and full mode, are remembered per space.
+//
+// Keys (keys.json, "geocine.<command>"): sidebar (Ctrl+B), full (Ctrl+Shift+Enter: the panel
+// grown over the terminals, or back), changes (Ctrl+Shift+D), graph (Ctrl+Shift+G), goto
+// (Ctrl+P / Ctrl+Shift+P in Geocine: the Files view's search). A view's key opens it, in full
+// mode when that is on; pressed again on the view shown, it closes the panel.
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand } from "herdr";
 import { ui } from "../lib/ui.js";
-import { openFull } from "../lib/nav.js";
-
-function find(node, id) {
-  if (node?.id === id) return node;
-  for (const child of node?.children ?? []) {
-    const found = find(child, id);
-    if (found) return found;
-  }
-  return null;
-}
+import { find, expanded, expand, collapse, toggleFull } from "../lib/nav.js";
 
 const PANELS = [
-  { id: "files", label: "Files", icon: ui("files") },
-  { id: "changes", label: "Changes", icon: ui("changes") },
-  { id: "graph", label: "Graph", icon: ui("git-graph") },
+  { id: "files", label: "Files", icon: ui("files"), key: "Ctrl+P" },
+  { id: "changes", label: "Changes", icon: ui("changes"), key: "Ctrl+Shift+D" },
+  { id: "graph", label: "Graph", icon: ui("git-graph"), key: "Ctrl+Shift+G" },
 ];
 
 // Folds the sidebar to its rail (icons only) or back to the width it had, as the sidebar's own
@@ -37,43 +33,73 @@ function foldSidebar() {
 export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
-    this.panels = JSON.parse(localStorage.getItem("tabs.panels") ?? "{}");
+    // Per space: the panel shown (or null) and whether it is grown (full mode). Older
+    // records are the panel's name alone.
+    this.panels = {};
+    try {
+      for (const [k, v] of Object.entries(JSON.parse(localStorage.getItem("tabs.panels") ?? "{}"))) this.panels[k] = typeof v === "object" && v ? v : { panel: v ?? null, full: false };
+    } catch {}
     // Key commands for the geocine mod ("geocine.<command>" in keys.json) land here.
     cx?.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
         if (c === "sidebar") foldSidebar();
+        else if (c === "full") toggleFull();
+        else if (c === "changes" || c === "graph") this.showView(c);
+        // goto: the Files copy on screen answers it. Not on screen, Files shows, and once its
+        // copy is there (a frame later) goto goes again, for it (this copy lets that one by).
+        else if (c === "goto") {
+          if (this.resent) this.resent = false;
+          else if (this.showView("files", { keep: true })) { await cx.sleep(80); this.resent = true; run("geocine.goto"); }
+        }
         cx.notify();
       }
     });
   }
 
-  // The side panel is remembered per space: switching shows that space's choice
-  // (closed if it never had one), and opening or closing it records it.
-  syncPanel(space, panel, body, enabled) {
+  // A view's key: shows it (grown when full mode is on); on the view shown, closes the panel,
+  // unless keep. Returns whether it showed the view just now.
+  showView(view, { keep = false } = {}) {
+    const l = layout(), panel = find(l, "panel"), body = find(l, "panel-body");
+    if (!body?.children?.some(c => c.id === view)) return false;
+    const open = panel && !panel.hidden ? body.active : null;
+    if (open === view) { if (!keep) collapse(false); return false; }
+    run("layout.select", { stack: "panel-body", child: view });
+    run("layout.show", { id: "panel" });
+    return true;
+  }
+
+  // The side panel and full mode are remembered per space: switching shows that space's
+  // choice (closed if it never had one), and opening, closing or growing it records it.
+  syncPanel(space, root, panel, body, enabled) {
     if (!space || !panel) return;
-    const now = panel.hidden ? null : body?.active ?? null;
+    const now = { panel: panel.hidden ? null : body?.active ?? null, full: expanded(root) };
+    const same = (a, b) => (a?.panel ?? null) === b.panel && Boolean(a?.full) === b.full;
     if (space.id !== this.space) {
       const first = this.space === undefined;
       this.space = space.id; this.pending = null;
       if (!(first && !(space.id in this.panels))) {
-        const stored = this.panels[space.id] ?? null, want = enabled.includes(stored) ? stored : null;
-        if (want !== now) {
+        const stored = this.panels[space.id] ?? null, shown = enabled.includes(stored?.panel) ? stored.panel : null;
+        const want = { panel: shown, full: Boolean(shown && stored?.full) };
+        if (!same(want, now)) {
           this.pending = { want, until: Date.now() + 1000 };
-          if (want) { run("layout.select", { stack: "panel-body", child: want }); run("layout.show", { id: "panel" }); }
-          else run("layout.hide", { id: "panel" });
+          if (want.full) expand(want.panel);
+          else {
+            collapse(Boolean(want.panel));
+            if (want.panel) { run("layout.select", { stack: "panel-body", child: want.panel }); run("layout.show", { id: "panel" }); }
+          }
           return;
         }
       }
     }
     // Until the restore lands (or something else won), the old state isn't a choice.
     if (this.pending) {
-      if (this.pending.want !== now && Date.now() < this.pending.until) return;
+      if (!same(this.pending.want, now) && Date.now() < this.pending.until) return;
       this.pending = null;
     }
-    if (this.panels[space.id] === now) return;
+    if (same(this.panels[space.id], now)) return;
     this.panels[space.id] = now;
-    localStorage.setItem("tabs.panels", JSON.stringify(this.panels));
+    try { localStorage.setItem("tabs.panels", JSON.stringify(this.panels)); } catch {}
   }
 
   render() {
@@ -89,17 +115,20 @@ export default class Tabs extends View {
       if (!first.has(p.tab)) first.set(p.tab, p.program);
       if (p.program?.agent && !agent.has(p.tab)) agent.set(p.tab, p.program);
     }
+    const root = layout(), grown = expanded(root);
     const item = (c, i) => {
       const program = agent.get(c.id) ?? first.get(c.id);
       const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
       return h_flex().id(`tab-${c.id}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
-        .border(1).border_color(c.active ? t.border : t.chrome).bg(c.active ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
+        // In full mode no terminal is on screen: the active pill doesn't look shown.
+        .border(1).border_color(c.active && !grown ? t.border : t.chrome).bg(c.active && !grown ? t.raised : t.chrome).text_color(c.active && !grown ? t.foreground : t.muted)
         .hover(s => s.bg(t.hover))
         .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
         .on_mouse_up("left", () => {
           const from = this.pressed; this.pressed = null;
           if (from !== null && from !== i) run("tab.move", { id: shown[from].id, index: space.tabs.findIndex(x => x.id === c.id) + 1 });
-          else run("tab.select", { id: c.id });
+          // In full mode a tab's pill brings the terminals back, showing it.
+          else { if (grown) collapse(); run("tab.select", { id: c.id }); }
         })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
         .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))
@@ -108,7 +137,7 @@ export default class Tabs extends View {
         .when(c.status === "blocked" || c.status === "done", el => el.child(div().size(6).rounded(3).bg(t[c.status])))
         .when(c.active, el => el.child(div().id(`close-${c.id}`).text_color(t.dim).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("tab.close", { id: c.id }); }).child(svg("mods/pane/close.svg").size(12))));
     };
-    const root = layout(), sidebar = find(root, "sidebar"), w = window();
+    const sidebar = find(root, "sidebar"), w = window();
     // Old saved rails and a dragged-narrow sidebar can be smaller than the window buttons.
     const lightsPadding = w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen && root?.traffic_lights
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
@@ -119,7 +148,7 @@ export default class Tabs extends View {
     // A panel Settings never offered (Graph, for a list picked before it existed) shows.
     const picked = shared("workspace.panels"), known = shared("workspace.panels.known") ?? ["files", "changes"];
     const enabled = PANELS.map(p => p.id).filter(id => offered.has(id) && (!Array.isArray(picked) || picked.includes(id) || !known.includes(id)));
-    this.syncPanel(space, panel, body, enabled);
+    this.syncPanel(space, root, panel, body, enabled);
     const open = panel && !panel.hidden ? body?.active : null;
     const panelButton = (p) => {
       const on = open === p.id;
@@ -127,9 +156,9 @@ export default class Tabs extends View {
         .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
         .on_click(() => {
-          if (on) run("layout.hide", { id: "panel" });
+          if (on) collapse(false);
           else { run("layout.select", { stack: "panel-body", child: p.id }); run("layout.show", { id: "panel" }); }
-        }).child(svg(p.icon).size(14)).child(p.label);
+        }).tooltip(`${p.label}  ${p.key}`).child(svg(p.icon).size(14)).child(p.label);
     };
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })
@@ -138,7 +167,9 @@ export default class Tabs extends View {
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
       .when(enabled.length > 0, el => el.child(div().w(1).h(16).mx(4).bg(t.border)))
       .children(PANELS.filter(p => enabled.includes(p.id)).map(panelButton))
-      .when(enabled.length > 0, el => el.child(button("full-mode", svg(ui("expand")).size(13), () => openFull(open ?? enabled[0]))))
+      .when(enabled.length > 0, el => el.child(button("full-mode", svg(ui(grown ? "collapse" : "expand")).size(13), () => toggleFull(open ?? enabled[0]))
+        .when(grown, b => b.bg(t.selected).text_color(t.foreground))
+        .tooltip(grown ? "Back to the terminals  Ctrl+Shift+Enter" : "Full view  Ctrl+Shift+Enter")))
       .when(w?.buttons, el => el.child(div().w(1).h(16).mx(4).bg(t.border))
         .child(button("minimize", w.platform === "windows" ? svg("mods/tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))

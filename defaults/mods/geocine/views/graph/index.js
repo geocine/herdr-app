@@ -161,7 +161,20 @@ export default class GraphView extends View {
     else this.poll(cx, true);
   }
 
-  update(p) { this.p = p ?? {}; }
+  // Grown into full mode or back (main.js): an open file's preview takes the new width's look.
+  update(p) {
+    const wide = Boolean(this.p?.wide);
+    this.p = p ?? {};
+    if (Boolean(this.p.wide) !== wide && this.previewView && this.previewProps) this.previewView.set_props(this.previewProps = { ...this.previewProps, wide: Boolean(this.p.wide) });
+    // Grown with nothing open: the details show the commit selected, else HEAD's (as full mode
+    // does from the start).
+    if (this.p.wide && !wide && !this.shown && this.commits?.length) this.post((cx) => {
+      if (this.shown || !this.p.wide) return;
+      const at = (h) => (h ? this.commits[this.index.get(h)] : null);
+      const c = at(this.selected) ?? at(this.head) ?? this.commits.find((x) => !x.uncommitted) ?? this.commits[0];
+      if (c) this.select(c.hash, cx, { open: true, scroll: true });
+    });
+  }
 
   post(job) { this.inbox.push(job); this.wake?.(); }
 
@@ -541,6 +554,7 @@ export default class GraphView extends View {
       onOpen: (rel, r) => this.post((cx) => this.openPath(rel, r === undefined ? rev : r, cx)),
       // While the preview edits (a file from disk), typed keys are the editor's.
       onEditing: (on) => { this.editing = on; } };
+    this.previewProps = p;
     if (this.previewView) this.previewView.set_props(p); else this.previewView = cx.new(Preview, p);
     this.handle.focus();
     cx.notify();

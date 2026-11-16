@@ -8,7 +8,7 @@
 // cybertron288/herdr-mods `filetree` (MIT). See NOTICE.md.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Popup, v_virtual_list, VirtualListScrollHandle, h_resizable, resizable_panel } from "gpui-base";
-import { theme, settings, watchFolder, notify, home, layout } from "herdr";
+import { theme, settings, watchFolder, notify, home, layout, run } from "herdr";
 import { SIZE, frame, header, subbar, row, iconButton, segmented, empty, textButton, badge, counts, ui } from "../../lib/ui.js";
 import { statusLetter, statusColor } from "../../lib/git.js";
 import { location, slash, baseName } from "../../lib/where.js";
@@ -69,8 +69,12 @@ export default class FilesView extends View {
     // The last folders shown (their listings, git and repo place), so going back shows at once.
     this.trees = new Map();
     this.start = this.p.start?.path ? this.p.start : null;
-    this.input = InputState.new({ placeholder: "Search files" });
-    this.input.on("change", (_e, cx) => { const v = this.input.value(); if (v !== this.query) this.search(v, cx); });
+    this.input = InputState.new({ placeholder: "Go to file  Ctrl+P" });
+    this.input.on("change", (_e, cx) => {
+      const v = this.input.value();
+      if (v.startsWith(">")) { this.input.set_value(""); if (this.query) this.search("", cx); run("app.palette"); return; }
+      if (v !== this.query) this.search(v, cx);
+    });
     this.input.on("submit", (_e, cx) => {
       const r = this.shown.find((x) => x.key === this.cursorKey()) ?? this.shown[0];
       if (r && !r.dir) this.handle.focus();
@@ -677,6 +681,14 @@ export default class FilesView extends View {
     if (save) this.save();
   }
 
+  // Go to file (Ctrl+P, Ctrl+Shift+P): the search field takes the keyboard, the last query kept
+  // so it can be refined or typed over. On the side panel's file page, back to the list first.
+  goto(cx) {
+    if (this.file && !this.wide) this.closeFile(cx);
+    this.input.focus();
+    cx.notify();
+  }
+
   closeFile(cx) {
     this.file = null;
     this.handle.focus();
@@ -726,7 +738,7 @@ export default class FilesView extends View {
     const abs = join(this.root, r.rel);
     if (id === "open") this.activate(r, cx);
     else if (id === "toggle") this.toggle(r, cx);
-    else if (id === "full") openFull("files", { path: r.rel, root: this.root, on: this.on });
+    else if (id === "full") { if (!this.p.full) this.openFile(r.rel, cx); openFull("files", { path: r.rel, root: this.root, on: this.on }); }
     else if (id === "copy-abs") copy(cx, native(abs, this.on));
     else if (id === "copy-rel") copy(cx, r.rel);
     else if (id === "copy-name") copy(cx, r.name);
@@ -995,8 +1007,8 @@ export default class FilesView extends View {
       segmented(t, "files-view", [{ id: "all", label: "All" }, { id: "changed", label: changed ? `Changed ${changed}` : "Changed" }], this.view, (id, cx) => this.setView(id, cx)),
       iconButton(t, "files-collapse", "fold-vertical", (_e, cx) => this.collapseAll(cx), { disabled: !this.folders.size && !(this.view === "changed" && !this.hits) }).tooltip("Collapse folders"),
       this.full
-        ? iconButton(t, "files-shrink", "collapse", () => closeFull()).tooltip("Back to the side panel")
-        : iconButton(t, "files-expand", "expand", () => openFull("files", this.file ? { path: this.file, root: this.root, on: this.on } : null)).tooltip("Full view"),
+        ? iconButton(t, "files-shrink", "collapse", () => closeFull()).tooltip("Back to the side panel  Ctrl+Shift+Enter")
+        : iconButton(t, "files-expand", "expand", () => openFull("files", this.file ? { path: this.file, root: this.root, on: this.on } : null)).tooltip("Full view  Ctrl+Shift+Enter"),
     ];
   }
 
@@ -1010,7 +1022,7 @@ export default class FilesView extends View {
       title: baseOf(rel), subtitle: dirOf(rel) || this.folderName(),
       actions: [
         local && iconButton(t, "files-external", "external-link", (_e, cx) => this.act("external", { rel, dir: false, name: baseOf(rel) }, cx)).tooltip("Open in default app"),
-        iconButton(t, "files-detail-full", "expand", () => openFull("files", { path: rel, root: this.root, on: this.on })).tooltip("Full view"),
+        iconButton(t, "files-detail-full", "expand", () => openFull("files", { path: rel, root: this.root, on: this.on })).tooltip("Full view  Ctrl+Shift+Enter"),
       ].filter(Boolean),
     }), this.preview ? div().size_full().min_h(0).min_w(0).flex().flex_col().child(this.preview) : empty(t, "Loading…"));
   }
