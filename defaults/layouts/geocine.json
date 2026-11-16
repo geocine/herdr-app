@@ -71,7 +71,7 @@
           "id": "sidebar-footer",
           "type": "block",
           "size": {
-            "px": 69
+            "px": 45
           },
           "content": {
             "mod": "workspace-chrome",
