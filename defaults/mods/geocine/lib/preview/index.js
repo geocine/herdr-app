@@ -97,7 +97,9 @@ function norm(p) {
   p ??= {};
   return { on: p.on ?? null, root: slash(p.root ?? "").replace(/\/+$/, ""), path: slash(p.path ?? "").replace(/^\.\//, ""),
     rev: p.rev || null, repoTop: p.repoTop ? slash(p.repoTop).replace(/\/+$/, "") : null, wide: Boolean(p.wide), onOpen: typeof p.onOpen === "function" ? p.onOpen : null,
-    onDirty: typeof p.onDirty === "function" ? p.onDirty : null, onEditing: typeof p.onEditing === "function" ? p.onEditing : null,
+    onDirty: typeof p.onDirty === "function" ? p.onDirty : null,
+    // Not onEditing: hosts would ignore every key while an edit is open, even with the list
+    // focused again; they act only on keys their own list has the focus for.
     statusView: p.statusView || null };
 }
 const ident = (p) => JSON.stringify([p.on, p.root, p.path, p.rev, p.repoTop]);
