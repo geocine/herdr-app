@@ -25,6 +25,41 @@ const SPLIT = { min: 220, max: 720, default: 320 };
 const MENU_W = 236, ITEM_H = 28;
 const GAP = 4;                       // space above a section header and the "All changes" row
 const BADGE = 14, BUTTON = 20;       // a row's status letter and its small buttons (ui.js badge, iconButton size 20)
+const INDENT = 14;                   // a tree level
+
+// A group's changes as a folder tree, VS Code style: folders first, then files, by name; a folder
+// with one folder in it and no files shows as one row ("src/views"). Calls emit(kind, it, depth)
+// in order: ("dir", { path, name, count }, depth) and ("file", entry, depth); a folded folder's
+// contents (folded(path) true) are skipped.
+function walkTree(list, folded, emit) {
+  const root = { dirs: new Map(), files: [], count: 0 };
+  for (const e of list) {
+    const parts = e.path.split("/");
+    let node = root;
+    node.count++;
+    for (let i = 0; i < parts.length - 1; i++) {
+      let next = node.dirs.get(parts[i]);
+      if (!next) { next = { dirs: new Map(), files: [], count: 0 }; node.dirs.set(parts[i], next); }
+      node = next;
+      node.count++;
+    }
+    node.files.push(e);
+  }
+  const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const visit = (node, prefix, depth) => {
+    for (const name of [...node.dirs.keys()].sort((a, b) => byName(a.toLowerCase(), b.toLowerCase()))) {
+      let dir = node.dirs.get(name), label = name, path = prefix + name;
+      while (dir.files.length === 0 && dir.dirs.size === 1) {
+        const [only, next] = [...dir.dirs.entries()][0];
+        label += `/${only}`; path += `/${only}`; dir = next;
+      }
+      emit("dir", { path, name: label, count: dir.count }, depth);
+      if (!folded(path)) visit(dir, `${path}/`, depth + 1);
+    }
+    for (const e of node.files.sort((a, b) => byName(a.path.toLowerCase(), b.path.toLowerCase()))) emit("file", e, depth);
+  };
+  visit(root, "", 0);
+}
 const SETTLE = 250;                  // a burst of file writes is one refresh
 const zoom = () => Number(settings()?.zoom) || 1;
 const stop = (_e, cx) => cx.stop_propagation();
@@ -77,6 +112,9 @@ export default class ChangesView extends View {
     this.previewAt = null;      // { path, rev }
     this.diff = null; this.preview = null; this.diffKey = null; this.previewKey = null;
     this.folded = new Set(pref("folded", []));
+    // List or tree (the header's switch); folded tree folders, by group and path ("changes:src").
+    this.tree = pref("tree", false) === true;
+    this.foldedDirs = new Set();
     this.split = Math.max(SPLIT.min, Math.min(SPLIT.max, Number(pref("split", SPLIT.default)) || SPLIT.default));
     this.menu = null; this.menuFor = null; this.confirm = null;
     this.message = ""; this.typing = false; this.busy = null; this.note = null;
@@ -306,7 +344,7 @@ export default class ChangesView extends View {
   // The list as rows, worked out once per refresh or fold (not per frame): items for the virtual
   // list, their sizes, and the selectable rows in order.
   listModel() {
-    const key = `${this.dataVersion}|${this.wide}|${[...this.folded].join(",")}`;
+    const key = `${this.dataVersion}|${this.wide}|${[...this.folded].join(",")}|${this.tree ? [...this.foldedDirs].join(",") || "tree" : ""}`;
     if (this.model?.key === key) return this.model;
     const items = [], rows = [], groups = [];
     let count = 0, adds = 0, dels = 0;
@@ -318,6 +356,13 @@ export default class ChangesView extends View {
       groups.push({ g, list });
       items.push({ key: `s:${g.id}`, kind: "section", g, list, size: SIZE.row + GAP });
       if (this.folded.has(g.id)) continue;
+      if (this.tree) {
+        walkTree(list, (path) => this.foldedDirs.has(`${g.id}:${path}`), (kind, it, depth) => {
+          if (kind === "dir") items.push({ key: `d:${g.id}:${it.path}`, kind: "dir", g, dir: it, depth, size: SIZE.row });
+          else { items.push({ key: `e:${it.section}:${it.path}`, kind: "entry", e: it, depth, size: SIZE.row }); rows.push({ section: it.section, path: it.path }); }
+        });
+        continue;
+      }
       for (const e of list) { items.push({ key: `e:${e.section}:${e.path}`, kind: "entry", e, size: SIZE.row }); rows.push({ section: e.section, path: e.path }); }
     }
     if (this.data?.cut) items.push({ key: "cut", kind: "cut", size: SIZE.row });
@@ -527,6 +572,7 @@ export default class ChangesView extends View {
     const fromEnd = this.listW - this.pressX;
     if (item.kind === "all") return this.select("all", cx);
     if (item.kind === "section") return this.sectionClick(item, fromEnd, cx);
+    if (item.kind === "dir") return this.toggleDir(item, cx);
     if (item.kind !== "entry") return;
     const e = item.e;
     const hit = this.busy ? null : rowButtonAt(fromEnd, e.section !== "conflicts");
@@ -545,6 +591,20 @@ export default class ChangesView extends View {
     const open = !this.folded.has(g.id);
     open ? this.folded.add(g.id) : this.folded.delete(g.id);
     setPref("folded", [...this.folded]);
+    cx.notify();
+  }
+
+  // A tree folder opens or folds (for this session).
+  toggleDir(item, cx) {
+    const k = `${item.g.id}:${item.dir.path}`;
+    this.foldedDirs.has(k) ? this.foldedDirs.delete(k) : this.foldedDirs.add(k);
+    cx.notify();
+  }
+
+  // List or tree, remembered.
+  toggleTree(cx) {
+    this.tree = !this.tree;
+    setPref("tree", this.tree);
     cx.notify();
   }
 
@@ -574,10 +634,11 @@ export default class ChangesView extends View {
       .child(this.rowButton(t, e.section === "staged" ? "minus" : "plus"));
   }
 
-  entryRow(t, e) {
+  // depth: in the tree (its folder shows above it, so not beside the name); null in the list.
+  entryRow(t, e, depth = null) {
     const selected = this.same(this.sel, { section: e.section, path: e.path }) && (this.wide || this.page === "list");
-    const name = baseName(e.path), dir = dirName(e.path), buttons = selected && !this.busy;
-    return h_flex().h(SIZE.row).flex_none().w_full().pl(SIZE.pad).pr(SIZE.pad).gap(6).items_center().text_size(SIZE.text).relative()
+    const name = baseName(e.path), dir = depth === null ? dirName(e.path) : "", buttons = selected && !this.busy;
+    return h_flex().h(SIZE.row).flex_none().w_full().pl(SIZE.pad + (depth ?? 0) * INDENT + (depth === null ? 0 : 16)).pr(SIZE.pad).gap(6).items_center().text_size(SIZE.text).relative()
       .when(selected, el => el.bg(t.selected)).text_color(t.foreground).cursor_pointer().hover(s => s.bg(selected ? t.selected : t.hover))
       .child(image(iconFor(e.path)).size(SIZE.icon).flex_none())
       .child(h_flex().flex_1().min_w(0).gap(6).items_center().overflow_hidden()
@@ -613,9 +674,22 @@ export default class ChangesView extends View {
       .child(div().w(BADGE).flex_none()));
   }
 
+  // A tree folder: chevron, folder icon, its path inside the group, how many changes are in it.
+  dirRow(t, item) {
+    const { dir, depth, g } = item, open = !this.foldedDirs.has(`${g.id}:${dir.path}`);
+    return h_flex().h(SIZE.row).flex_none().w_full().pl(SIZE.pad + depth * INDENT).pr(SIZE.pad).gap(6).items_center().text_size(SIZE.text)
+      .text_color(t.muted).cursor_pointer().hover(s => s.bg(t.hover).text_color(t.foreground))
+      .child(svg(ui(open ? "chevron-down" : "chevron-right")).size(12).flex_none().text_color(t.dim))
+      .child(image(iconFor(dir.path, true, open)).size(SIZE.icon).flex_none())
+      .child(div().flex_1().min_w(0).truncate().child(dir.name))
+      .child(div().flex_none().text_size(SIZE.small).text_color(t.dim).child(String(dir.count)))
+      .child(div().w(BADGE).flex_none());
+  }
+
   itemView(t, item) {
     switch (item.kind) {
-      case "entry": return this.entryRow(t, item.e);
+      case "entry": return this.entryRow(t, item.e, item.depth ?? null);
+      case "dir": return this.dirRow(t, item);
       case "section": return this.sectionRow(t, item);
       case "all": return this.allRow(t);
       case "cut": return div().w_full().h(item.size).px(SIZE.pad).flex().items_center().text_size(SIZE.small).text_color(t.dim).child(`Showing the first ${this.data?.total ?? 0} changes`);
@@ -730,6 +804,7 @@ export default class ChangesView extends View {
   headerActions(t) {
     return [
       this.loading || this.busy ? svg("mods/workspace-chrome/spinner.svg").size(SIZE.icon).flex_none().text_color(t.dim).spin(900) : null,
+      iconButton(t, "changes-tree", this.tree ? "list" : "list-tree", (_e, cx) => this.toggleTree(cx)).tooltip(this.tree ? "View as list" : "View as tree"),
       iconButton(t, "changes-refresh", "rotate-cw", (_e, cx) => this.refresh(cx, { changed: true })).tooltip("Refresh"),
       this.expandButton(t),
     ].filter(Boolean);
