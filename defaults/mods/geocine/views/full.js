@@ -1,6 +1,6 @@
-// Full mode: one Geocine view almost as big as the window, its list and its detail side by
+// Full mode: one view (Files, Changes or Graph) almost as big as the window, its list and its detail side by
 // side. A switch on top moves between Files, Changes and Graph without closing.
-import { View, div, svg } from "gpui-kit";
+import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { props, theme } from "herdr";
 import { SIZE, segmented, iconButton } from "../lib/ui.js";
@@ -37,8 +37,6 @@ export default class Full extends View {
     const t = theme();
     return v_flex().size_full().min_h(0).bg(t.background).text_color(t.foreground)
       .child(h_flex().h(40).flex_none().px(12).gap(10).items_center().bg(t.chrome).border_b(1).border_color(t.border)
-        .child(svg("mods/geocine/icons/ui/expand.svg").size(SIZE.icon).text_color(t.accent))
-        .child(div().text_size(13).font_semibold().child("Geocine"))
         .child(segmented(t, "full-tabs", FULL_TABS, this.tab, (id, cx) => this.switchTo(id, cx)))
         .child(div().flex_1())
         .child(div().text_size(SIZE.small).text_color(t.dim).child("Esc closes"))
