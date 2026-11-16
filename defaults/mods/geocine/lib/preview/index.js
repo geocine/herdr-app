@@ -34,7 +34,7 @@ const MAX_EDITORS = 300;     // fences past this stay in the prose, uncolored
 const MAX_DIAGRAM_W = 640;   // diagram width cap at 100 %
 const COL_W = 860;           // reading column cap at 100 %; scales with the zoom
 const LEVELS = [0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
-const ZOOM_KEY = "preview.zoom", WRAP_KEY = "preview.wrap", BLAME_KEY = "preview.blame";
+const ZOOM_KEY = "preview.zoom", WRAP_KEY = "preview.wrap", BLAME_KEY = "preview.blame.on";   // new name: blame starts off, whatever the old switch said
 const BLAME_W = 210;         // the blame column (full mode)
 const BLAME_DELAY = 150;     // ms after the file shows before git blame starts
 const DEBOUNCE = 200, MAX_WAIT = 1000;   // live reload: agents write in bursts
@@ -135,7 +135,7 @@ export default class Preview extends View {
     this.textZoom = LEVELS.includes(z) ? z : 1;
     this.codeFont = Math.round(FONT * this.textZoom);
     this.wrap = localStorage.getItem(WRAP_KEY) === "1";
-    this.blameCol = localStorage.getItem(BLAME_KEY) !== "0";   // blame shown: the line notes, and full mode's column
+    this.blameCol = localStorage.getItem(BLAME_KEY) === "1";   // blame shown (off until turned on): the line notes, and full mode's column
     this.blame = null;    // { rows, commits } of the file on disk (blame.js), null until known
     this.blameKey = null; // what this.blame was read for: { doc, st }
     this.blameHints = null;
@@ -544,6 +544,8 @@ export default class Preview extends View {
   queueBlame(cx, st) {
     const doc = this.doc, p = this.p, abs = this.abs(), gen = this.gen;
     const key = String(st ?? "");
+    // Hidden: no git blame at all; turning it on (toggleBlame) reads it then.
+    if (!this.blameCol) return;
     if (!doc || (doc.kind !== "text" && doc.kind !== "markdown") || p.rev || !abs) return;
     if (this.blameKey?.doc === doc && this.blameKey.st === key) return;
     if (st === null || (doc.lines ?? 0) > blm.BLAME_MAX_LINES) { this.blameKey = { doc, st: key }; this.setBlame(null); return; }
@@ -585,8 +587,16 @@ export default class Preview extends View {
   toggleBlame(cx) {
     this.blameCol = !this.blameCol;
     try { localStorage.setItem(BLAME_KEY, this.blameCol ? "1" : "0"); } catch {}
+    if (this.blameCol && this.lastStatus !== undefined) this.queueBlame(cx, this.lastStatus);
     this.applyHints();
     cx.notify();
+  }
+
+  /** The blame button shows: a file git tracks (its marks known), as of the disk, not too long. */
+  canBlame() {
+    const doc = this.doc;
+    if (this.blame) return true;
+    return Boolean(doc) && !this.p.rev && this.lastStatus != null && (doc.lines ?? 0) <= blm.BLAME_MAX_LINES;
   }
 
   setMarks(m) {
@@ -1113,7 +1123,7 @@ export default class Preview extends View {
       .child(div().flex_1())
       .children(this.editButtons(t))
       .when(this.findable(), (el) => el.child(iconButton(t, "pv-find", "search", (_e, cx) => this.openFind(cx), { on: Boolean(this.ds) })))
-      .when(Boolean(this.blame) && (doc?.kind === "text" || this.editing()), (el) => el.child(iconButton(t, "pv-blame", "history", (_e, cx) => this.toggleBlame(cx), { on: this.blameCol })))
+      .when(this.canBlame() && (doc?.kind === "text" || this.editing()), (el) => el.child(iconButton(t, "pv-blame", "history", (_e, cx) => this.toggleBlame(cx), { on: this.blameCol }).tooltip(this.blameCol ? "Hide blame" : "Show blame")))
       .when(doc?.kind === "text", (el) => el.child(iconButton(t, "pv-wrap", "wrap-text", (_e, cx) => this.toggleWrap(cx), { on: this.wrapOn(), disabled: lang.wraps(lang.forPath(p.path)) })))
       .when(Boolean(doc) && doc.kind !== "binary" && doc.kind !== "missing" && doc.kind !== "error", (el) => el
         .child(iconButton(t, "pv-zoom-out", "zoom-out", (_e, cx) => this.textAct("out", cx), { disabled: this.textZoom === LEVELS[0] }))
