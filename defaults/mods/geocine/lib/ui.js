@@ -6,11 +6,11 @@ import { h_flex, v_flex } from "gpui-base";
 
 // Sizes (px at zoom 1). Change them here, not in a view.
 export const SIZE = {
-  header: 34,      // a view's top bar
-  subheader: 28,   // a second bar (search field, section switch, back bar)
+  header: 36,      // a view's top bar (buttons keep ~6 px above and below, as the tab bar's pills)
+  subheader: 32,   // a second bar (search field, section switch, back bar)
   row: 24,         // a list row (tree, file list, commit row)
   icon: 14,        // icons in rows and buttons
-  button: 24,      // square icon buttons
+  button: 22,      // square icon buttons
   radius: 6,       // buttons, pills, inputs
   card: 8,         // cards and popovers
   pad: 8,          // horizontal padding of bars and rows
