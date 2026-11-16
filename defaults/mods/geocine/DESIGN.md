@@ -119,7 +119,7 @@ Find in document: `Ctrl+F` / `/`, a match count, next and previous. In a code fi
 the Editor (`EditorState.search`): matches highlighted in the text, the current one scrolled to.
 Zoom: 70–200%, per view in localStorage.
 
-Blame (`lib/preview/blame.js`): `git blame --porcelain` in the background once the file shows,
+Blame (`lib/preview/blame.js`): off until the history button turns it on (remembered). Then `git blame --porcelain` in the background once the file shows,
 again only when its text or git status changes; never before the text is on screen. The cursor
 line gets a GitLens-like note (`EditorState.set_line_hints`); full mode adds a blame column (the
 history button hides or shows both), for files up to 1000 lines. Over 20000 lines: no blame. In
