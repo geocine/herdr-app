@@ -380,6 +380,17 @@ export default class ChangesView extends View {
     cx.notify();
   }
 
+  // A change picked in the command palette (main.js): selected, its diff shown. Not read yet
+  // (just shown, another repo): it waits for the list (render).
+  openTarget(want, cx) {
+    const low = want.path.toLowerCase();
+    const e = ["conflicts", "unstaged", "untracked", "staged"].map(s => this.entries(s).find(x => x.path.toLowerCase() === low)).find(Boolean);
+    // Not in the list (yet): tried again as the list is read anew, three times at most.
+    if (!e) { this.pendingWant = (want.tries ?? 0) < 3 ? { ...want, tries: (want.tries ?? 0) + 1 } : null; this.pendingSeen = this.dataVersion; return; }
+    this.pendingWant = null;
+    this.select({ section: e.section, path: e.path }, cx);
+  }
+
   openFile(path, rev) {
     this.previewAt = { path, rev: rev ?? null };
     if (!this.wide) this.page = "preview";
@@ -758,6 +769,8 @@ export default class ChangesView extends View {
     // The first draw starts the work (a copy that is made but never drawn stays idle); a copy
     // that missed changes while hidden catches up when it shows again.
     if (!this.started) { this.started = true; this.refresh(cx); }
+    // A palette pick waiting for the list: tried once the list is read again.
+    if (this.pendingWant && this.dataVersion !== this.pendingSeen) { const w = this.pendingWant; this.pendingWant = null; cx.timer.after(0, (cx) => { this.openTarget(w, cx); cx.notify(); }); }
     else if (this.stale && this.isShown()) { this.stale = false; this.refresh(cx); }
     else { const loc = location(); if (loc.cwd && locationKey(loc) !== this.ctx) this.refresh(cx); }
     const t = theme();

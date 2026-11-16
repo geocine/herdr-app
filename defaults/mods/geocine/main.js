@@ -12,12 +12,13 @@
 // A panel view (files, changes, graph) in full mode: the panel grown over the terminals
 // (lib/nav.js). This router tells the view (props wide and full) and gives it the keyboard.
 import { View, div } from "gpui-kit";
-import { props, theme, nextCommand } from "herdr";
+import { props, theme, nextCommand, shared } from "herdr";
 import { VIEWS } from "./views/index.js";
 import { inline } from "./lib/inline.js";
 import { grownView, closeFull } from "./lib/nav.js";
 
 const PANEL_VIEWS = ["files", "changes", "graph"];
+const OPEN_FRESH = 5000;   // a palette pick older than this (ms) is not opened any more
 
 export default class Geocine extends View {
   init(_props, cx) {
@@ -48,6 +49,12 @@ export default class Geocine extends View {
         this.view.update?.({ ...this.base, wide: grown, full: grown }, cx);
         // The terminals went away under the keyboard: the grown view takes it.
         if (grown) cx.timer.after(0, () => this.view.handle?.focus?.());
+      }
+      // A file or change picked in the command palette for this view: opened once, here.
+      const want = shared("geocine.open");
+      if (want?.view === this.name && want.at !== this.openedAt && Date.now() - want.at < OPEN_FRESH) {
+        this.openedAt = want.at;
+        cx.timer.after(0, (cx) => { this.view.openTarget?.(want, cx); this.view.handle?.focus?.(); cx.notify(); });
       }
     }
     return div().size_full().min_w(0).min_h(0).flex().flex_col().bg(t.background)

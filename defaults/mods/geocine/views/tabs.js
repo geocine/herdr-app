@@ -4,7 +4,8 @@
 //
 // Keys (keys.json, "geocine.<command>"): sidebar (Ctrl+B), full (Ctrl+Shift+Enter: the panel
 // grown over the terminals, or back), changes (Ctrl+Shift+D), graph (Ctrl+Shift+G), goto
-// (Ctrl+P / Ctrl+Shift+P in Geocine: the Files view's search). A view's key opens it, in full
+// (Ctrl+P in Geocine: the Files view's search), open (a file or change from the command
+// palette, in full mode: shared "geocine.open"). A view's key opens it, in full
 // mode when that is on; pressed again on the view shown, it closes the panel.
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
@@ -45,6 +46,9 @@ export default class Tabs extends View {
         const c = await nextCommand();
         if (c === "sidebar") foldSidebar();
         else if (c === "full") toggleFull();
+        // A file or change picked in the command palette: full mode on its view; the view's copy
+        // opens it (main.js reads "geocine.open").
+        else if (c === "open") { const want = shared("geocine.open"); if (want?.view) expand(want.view); }
         else if (c === "changes" || c === "graph") this.showView(c);
         // goto: the Files copy on screen answers it. Not on screen, Files shows, and once its
         // copy is there (a frame later) goto goes again, for it (this copy lets that one by).
