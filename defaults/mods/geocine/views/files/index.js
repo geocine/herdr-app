@@ -69,7 +69,7 @@ export default class FilesView extends View {
     // The last folders shown (their listings, git and repo place), so going back shows at once.
     this.trees = new Map();
     this.start = this.p.start?.path ? this.p.start : null;
-    this.input = InputState.new({ placeholder: "Go to file  Ctrl+P" });
+    this.input = InputState.new({ placeholder: "Go to file  Ctrl+Shift+R" });
     this.input.on("change", (_e, cx) => {
       const v = this.input.value();
       if (v.startsWith(">")) { this.input.set_value(""); if (this.query) this.search("", cx); run("app.palette"); return; }
@@ -691,7 +691,7 @@ export default class FilesView extends View {
     this.openFile(rel, cx);
   }
 
-  // Go to file (Ctrl+P): the search field takes the keyboard, the last query kept
+  // Go to file (Ctrl+Shift+R): the search field takes the keyboard, the last query kept
   // so it can be refined or typed over. On the side panel's file page, back to the list first.
   goto(cx) {
     if (this.file && !this.wide) this.closeFile(cx);

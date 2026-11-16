@@ -4,6 +4,7 @@
 // Hunk numbering follows herdr-file-preview `commits.js` (MIT); the shapes are DESIGN.md's.
 import { readTextFile } from "herdr";
 import { gitRead } from "../git.js";
+import { expandTabs } from "../tabs.js";
 
 // What one diff may hold before it is cut (lines per file, lines in all), so a huge change stays usable.
 export const MAX_FILE_LINES = 20000, MAX_LINES = 200000;
@@ -109,7 +110,7 @@ export function parseDiff(text, { maxFileLines = MAX_FILE_LINES, maxLines = MAX_
     // Read against the first parent: its column says added, removed or kept.
     if (hunk && file.combined && /^[ +\-\\]/.test(l)) {
       if (l[0] === "\\") { hunk.lines.push({ kind: "meta", text: l, old: null, new: null }); continue; }
-      const marks = l.slice(0, hunk.parents), text = l.slice(hunk.parents);
+      const marks = l.slice(0, hunk.parents), text = expandTabs(l.slice(hunk.parents));
       let line;
       if (marks[0] === "-") { line = { kind: "del", text, old: oldAt++, new: null }; file.dels++; }
       else if (marks[0] === "+") { line = { kind: "add", text, old: null, new: newAt++ }; file.adds++; }
@@ -124,9 +125,9 @@ export function parseDiff(text, { maxFileLines = MAX_FILE_LINES, maxLines = MAX_
       const c = l[0];
       if (c === "\\") { hunk.lines.push({ kind: "meta", text: l, old: null, new: null }); continue; }
       let line;
-      if (c === "+") { line = { kind: "add", text: l.slice(1), old: null, new: newAt++ }; newLeft--; file.adds++; }
-      else if (c === "-") { line = { kind: "del", text: l.slice(1), old: oldAt++, new: null }; oldLeft--; file.dels++; }
-      else { line = { kind: "ctx", text: c === " " ? l.slice(1) : l, old: oldAt++, new: newAt++ }; oldLeft--; newLeft--; }
+      if (c === "+") { line = { kind: "add", text: expandTabs(l.slice(1)), old: null, new: newAt++ }; newLeft--; file.adds++; }
+      else if (c === "-") { line = { kind: "del", text: expandTabs(l.slice(1)), old: oldAt++, new: null }; oldLeft--; file.dels++; }
+      else { line = { kind: "ctx", text: expandTabs(c === " " ? l.slice(1) : l), old: oldAt++, new: newAt++ }; oldLeft--; newLeft--; }
       if (file.kept >= maxFileLines || total >= maxLines) { file.truncated = true; continue; }
       if (line.text.endsWith("\r")) line.text = line.text.slice(0, -1);
       hunk.lines.push(line); file.kept++; total++;
