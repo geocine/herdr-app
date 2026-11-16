@@ -458,12 +458,12 @@ export default class Diff extends View {
       .when(viewed > 0, el => el.child(div().text_size(SIZE.small).text_color(t.dim).child(`· ${viewed} viewed`)))
       .when(this.loading, el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).text_color(t.dim).spin(900)))
       .child(div().flex_1())
-      .when(this.width >= SPLIT_MIN, el => el.child(iconButton(t, `${this.uid}-split`, split ? "rows-2" : "columns-2", (_e, cx) => this.toggleSplit(cx), { on: split })))
+      .when(this.width >= SPLIT_MIN, el => el.child(iconButton(t, `${this.uid}-split`, split ? "rows-2" : "columns-2", (_e, cx) => this.toggleSplit(cx), { on: split, size: SIZE.button - 4 })))
       .child(iconButton(t, `${this.uid}-fold`, "chevrons-down-up", (_e, cx) => {
         if (this.menu) this.menu = null;
         else if (Date.now() - (this.menuClosedAt ?? 0) > 250) this.menu = "fold";
         cx.notify();
-      }, { on: this.menu === "fold" }));
+      }, { on: this.menu === "fold", size: SIZE.button - 4 }));
   }
 
   render(cx) {

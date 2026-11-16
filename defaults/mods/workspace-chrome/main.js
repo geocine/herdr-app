@@ -39,11 +39,14 @@ export default class WorkspaceChrome extends View {
         .on_click(action).child(svg(`mods/workspace-chrome/${icon}.svg`).size(14))
         .when(!collapsed, el => el.child(label));
       const ready = div().size(6).rounded_full().bg(t.accent);
+      // Add machine shows only when turned on (Settings → Machines, shared "sidebar.add_machine").
+      const addMachine = shared("sidebar.add_machine") === true;
       return v_flex().size_full().bg(t.chrome).border_t(1).border_color(t.border).px(8).pt(4).pb(8).text_size(13)
         .when(collapsed, el => el.px(0).items_center())
+        .when(!addMachine, el => el.justify_center().pt(0).pb(0))
         .child(row("settings", "settings", "Settings", false, () => run("app.settings"))
           .when(Boolean(updates().app.ready), el => el.child(collapsed ? ready.absolute().top(5).right(6) : ready)))
-        .child(row("machine", "plus", "Add machine", true, () => run("mod.open", { name: "machine-add" })));
+        .when(addMachine, el => el.child(row("machine", "plus", "Add machine", true, () => run("mod.open", { name: "machine-add" }))));
     }
     return h_flex().size_full().bg(t.chrome).pl(collapsed ? 6 : 14).pr(10).gap(4).items_center().text_size(13.5)
       .when(window()?.platform === "macos" && !window()?.fullscreen && !collapsed, el => el.pl(76))
