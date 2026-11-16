@@ -681,7 +681,17 @@ export default class FilesView extends View {
     if (save) this.save();
   }
 
-  // Go to file (Ctrl+P, Ctrl+Shift+P): the search field takes the keyboard, the last query kept
+  // A file picked in the command palette (main.js): its path is relative to want.root.
+  openTarget(want, cx) {
+    if (!this.root) { this.start = { path: want.path, root: want.root, on: want.on }; return; }
+    const rel = want.root && slash(want.root) !== this.root ? relTo(this.root, join(slash(want.root), want.path)) : want.path;
+    if (!rel) return;
+    if (this.query) this.clearSearch(cx);
+    this.cursor = rel; for (const a of ancestors(rel)) this.folders.add(a); this.scrollTo = rel; this.touch();
+    this.openFile(rel, cx);
+  }
+
+  // Go to file (Ctrl+P): the search field takes the keyboard, the last query kept
   // so it can be refined or typed over. On the side panel's file page, back to the list first.
   goto(cx) {
     if (this.file && !this.wide) this.closeFile(cx);

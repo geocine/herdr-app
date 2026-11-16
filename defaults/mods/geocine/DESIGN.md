@@ -69,8 +69,13 @@ Keys (`defaults/keys.json`):
 - `Ctrl+Shift+Enter` (`geocine.full`): full mode on or off.
 - `Ctrl+Shift+D` / `Ctrl+Shift+G` (`geocine.changes` / `geocine.graph`): show Changes / Graph
   (grown, when full mode is on); again on the view shown closes the panel.
-- `Ctrl+P` / `Ctrl+Shift+P` while Geocine has the keyboard (`mod:geocine`, `geocine.goto`):
-  go to file, the Files view's search. A leading `>` hands over to the command palette.
+- `Ctrl+P` while Geocine has the keyboard (`mod:geocine`, `geocine.goto`): go to file, the
+  Files view's search. A leading `>` hands over to the command palette.
+- The command palette (`Ctrl+Shift+P`, `defaults/frame/palette`) lists the panel's entries and,
+  while typing, the focused terminal's files and changes (`places.js`, one git read per
+  palette). A pick sets shared `geocine.open` ({ view, path, root, at }) and runs
+  `geocine.open`: the tab bar grows the panel on that view, and `main.js` hands the target to
+  the view's copy (`openTarget`): Files opens the file, Changes selects the change.
 - `Esc` in full mode with nothing left to close (the list has the keyboard): back to the
   terminals. A terminal tab's pill does the same, showing that tab.
 

@@ -67,8 +67,7 @@
     "ctrl-shift-g": "geocine.graph"
   },
   "mod:geocine": {
-    "ctrl-p": "geocine.goto",
-    "ctrl-shift-p": "geocine.goto"
+    "ctrl-p": "geocine.goto"
   },
   "terminal": {
     "ctrl-backspace": "send:\u0017",
