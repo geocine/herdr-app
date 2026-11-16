@@ -727,9 +727,9 @@ export default class GraphView extends View {
       .child(div().flex_1().min_w(0).child(Input.new(this.findState).w_full().h(22).px(6).rounded(SIZE.radius - 2).border_1().border_color(t.input)
         .bg(t.background).text_size(SIZE.text).text_color(t.foreground)))
       .child(div().flex_none().text_size(SIZE.small).text_color(f.query && !n ? t.ansi1 : t.dim).child(f.query ? (n ? `${f.at + 1}/${n}` : "none") : ""))
-      .child(iconButton(t, "graph-find-prev", "chevron-up", (_e, cx) => this.findNext(-1, cx), { disabled: !n, size: 22 }))
-      .child(iconButton(t, "graph-find-next", "chevron-down", (_e, cx) => this.findNext(1, cx), { disabled: !n, size: 22 }))
-      .child(iconButton(t, "graph-find-close", "close", (_e, cx) => this.closeFind(cx), { size: 22 }));
+      .child(iconButton(t, "graph-find-prev", "chevron-up", (_e, cx) => this.findNext(-1, cx), { disabled: !n, size: SIZE.button - 4 }))
+      .child(iconButton(t, "graph-find-next", "chevron-down", (_e, cx) => this.findNext(1, cx), { disabled: !n, size: SIZE.button - 4 }))
+      .child(iconButton(t, "graph-find-close", "close", (_e, cx) => this.closeFind(cx), { size: SIZE.button - 4 }));
   }
 
   columns(t, width) {
@@ -817,7 +817,7 @@ export default class GraphView extends View {
     const bar = subbar(t, "graph-detail-tabs").child(segmented(t, "graph-tab", tabs, tab, (id, cx) => this.setTab(id, cx)))
       .child(div().flex_1())
       .when(tab === "file" && Boolean(this.file?.rev), (e) => e.child(div().flex_none().font_family(mono).text_size(11).text_color(t.dim).child(`at ${String(this.file.rev).slice(0, 8)}`)))
-      .when(tab === "file", (e) => e.child(iconButton(t, "graph-file-close", "close", (_e, cx) => { this.file = null; this.setTab(split ? "diff" : "overview", cx); }, { size: 22 })));
+      .when(tab === "file", (e) => e.child(iconButton(t, "graph-file-close", "close", (_e, cx) => { this.file = null; this.setTab(split ? "diff" : "overview", cx); }, { size: SIZE.button - 4 })));
     const content = tab === "file" ? (this.previewView ?? empty(t, "No file"))
       : tab === "diff" ? (this.diffView ?? empty(t, "Loading diff…"))
       : overview(this, t, c, mono);
