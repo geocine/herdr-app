@@ -112,7 +112,15 @@ export default class ChangesView extends View {
     cx.timer.every(30000, (cx) => this.tick(cx));
   }
 
-  update(p) { this.p = p ?? {}; }
+  // Grown into full mode or back (main.js): the list and the detail re-lay out in place.
+  update(p) {
+    const wide = this.wide;
+    this.p = p ?? {};
+    if (this.wide === wide) return;
+    if (this.wide && !this.sel) this.sel = "all";
+    if (!this.wide) this.page = this.previewAt ? "preview" : this.sel && this.sel !== "all" ? "diff" : "list";
+    this.poke();
+  }
   poke() { const w = this.wake; this.wake = null; w?.(); }
   // The copy goes (full mode closed): its timers and watch stop working.
   close() { this.closed = true; this.watched = null; }
