@@ -334,8 +334,9 @@ fn as_shipped(dir: &Path, files: &Files) -> bool {
     }
     let mut found = Vec::new();
     walk(dir, dir, &mut found);
-    // gpui-shell writes these editor helpers when it loads a mod.
-    found.retain(|f| !matches!(f.as_str(), "gpui-kit.d.ts" | "jsconfig.json") || files.contains_key(f));
+    // gpui-shell writes these editor helpers when it loads a mod: the typings into every folder
+    // with scripts (a mod with lib/ and views/ gets several), the config at the top.
+    found.retain(|f| !(f == "jsconfig.json" || f == "gpui-kit.d.ts" || f.ends_with("/gpui-kit.d.ts")) || files.contains_key(f));
     found.len() == files.len() && found.iter().all(|f| files.contains_key(f)) && untouched(dir, files)
 }
 
@@ -2077,6 +2078,7 @@ mod tests {
         assert!(as_shipped(&dir, &files));
         std::fs::write(dir.join("gpui-kit.d.ts"), "generated").unwrap();
         std::fs::write(dir.join("jsconfig.json"), "generated").unwrap();
+        std::fs::write(dir.join("icons/gpui-kit.d.ts"), "generated").unwrap();
         assert!(as_shipped(&dir, &files));
         std::fs::write(dir.join(".DS_Store"), "finder").unwrap();
         std::fs::create_dir(dir.join(".vscode")).unwrap();
