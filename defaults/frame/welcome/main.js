@@ -337,7 +337,7 @@ export default class Welcome extends View {
               .child("Add a machine"),
           ),
       )
-      .child(this.para(t, "Not now? Add machine is at the bottom of the sidebar too."));
+      .child(this.para(t, "Not now? Settings → Machines has it too."));
   }
 
   // The palette key, drawn as keycaps beside what it does.

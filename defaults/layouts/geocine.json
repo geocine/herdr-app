@@ -104,13 +104,16 @@
         {
           "id": "work-body",
           "type": "row",
-          "padding": 8,
-          "gap": 8,
+          "divider": {
+            "width": 1,
+            "color": "border"
+          },
           "children": [
             {
               "id": "main",
               "type": "block",
               "min": 320,
+              "padding": 8,
               "content": {
                 "tab": "active",
                 "pane": {

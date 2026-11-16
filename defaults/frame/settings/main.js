@@ -769,7 +769,10 @@ export default class Settings extends View {
       .when(this.machineList?.length === 0, (el) => el.child(div().py(14).text_size(12.5).text_color(t.dim).child("No other machines yet.")))
       .when(Boolean(this.machineError), (el) => el.child(div().py(10).text_size(12.5).text_color(t.blocked).child(this.machineError)))
       .when(Boolean(this.machineNotice), (el) => el.child(div().py(10).text_size(12.5).text_color(t.ansi2).child(this.machineNotice)))
-      .child(h_flex().pt(16).child(this.button(t, "st-m-add", "Add a machine", () => run("mod.open", { name: "machine-add" }))));
+      .child(h_flex().pt(16).child(this.button(t, "st-m-add", "Add a machine", () => run("mod.open", { name: "machine-add" }))))
+      .child(div().h(14))
+      .child(this.row(t, "Add machine in the sidebar", "A button under Settings in the sidebar. Off by default; this page always has it.",
+        this.toggle(t, "st-m-sidebar", shared("sidebar.add_machine") === true, (_e, cx) => { setShared("sidebar.add_machine", shared("sidebar.add_machine") !== true); cx.notify(); })));
   }
 
   // Alerts ---------------------------------------------------------------
