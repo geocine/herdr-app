@@ -63,6 +63,9 @@ export default class FilesView extends View {
     this.source = pref("source", "git") === "disk" ? "disk" : "git";
     this.split = Math.max(SPLIT.min, Math.min(SPLIT.max, Number(pref("split", SPLIT.default)) || SPLIT.default));
     this.width = 360; this.query = ""; this.hits = null; this.searchSeq = 0; this.shown = [];
+    // Search results as a list (ranked) or as a tree (by folder, the best match's first); the
+    // tree's folded folders last for the search.
+    this.hitTree = pref("hitTree", false) === true; this.hitFolded = new Set();
     this.preview = null; this.menu = null; this.typing = false;
     // ver: bumped by every change the rows depend on; rows() is rebuilt only then.
     this.ver = 0; this.built = null; this.tick = 0; this.dirty = false; this.runs = 0; this.loadingAt = 0;
@@ -400,6 +403,8 @@ export default class FilesView extends View {
   // ── folders ──────────────────────────────────────────────────────────────────────────
   toggle(r, cx) {
     if (!r?.dir || r.gone) return;
+    // A folder of the results tree folds; a folder found by the search opens in the tree.
+    if (r.hitDir) { if (this.hitFolded.has(r.rel)) this.hitFolded.delete(r.rel); else this.hitFolded.add(r.rel); this.touch(); cx.notify(); return; }
     if (this.hits) { this.reveal(r.rel, true, cx); return; }
     if (this.view === "changed" && !r.disk) {
       if (this.shut.has(r.rel)) this.shut.delete(r.rel); else this.shut.add(r.rel);
@@ -558,7 +563,7 @@ export default class FilesView extends View {
   }
 
   clearSearch(cx) {
-    this.query = ""; this.hits = null; this.searchSeq++; this.searching = false; this.searchError = null; this.touch();
+    this.query = ""; this.hits = null; this.searchSeq++; this.searching = false; this.searchError = null; this.hitFolded.clear(); this.touch();
     this.input.set_value("");
     this.scrollTo = this.cursor || null;
     cx.notify();
@@ -601,7 +606,50 @@ export default class FilesView extends View {
   }
 
   hitRows() {
-    return this.hits.map((h) => ({ key: `?${h.rel}`, rel: h.rel, name: baseOf(h.rel), dir: h.dir, depth: 0, open: false, gone: this.git.gone.has(h.rel), disk: false, hit: h.pos }));
+    const row = (h, depth, inTree) => ({ key: `?${h.rel}`, rel: h.rel, name: baseOf(h.rel), dir: h.dir, depth, open: false, gone: this.git.gone.has(h.rel), disk: false, hit: h.pos, inTree });
+    if (!this.hitTree) return this.hits.map((h) => row(h, 0, false));
+    // A tree of the matches' folders. Folders keep the rank of their best match (so the best
+    // stays on top), files their own; a folder with one folder in it and no match shows as one
+    // row ("src/views").
+    const root = { dirs: new Map(), files: [], best: 0 };
+    this.hits.forEach((h, rank) => {
+      const parts = h.rel.split("/");
+      let node = root;
+      for (let i = 0; i < parts.length - 1; i++) {
+        let next = node.dirs.get(parts[i]);
+        if (!next) { next = { dirs: new Map(), files: [], best: rank }; node.dirs.set(parts[i], next); }
+        node = next;
+      }
+      node.files.push({ h, rank });
+    });
+    const out = [];
+    const visit = (node, prefix, depth) => {
+      const kids = [
+        ...[...node.dirs.entries()].map(([name, d]) => ({ name, d, rank: d.best })),
+        ...node.files.map((f) => ({ f, rank: f.rank })),
+      ].sort((a, b) => a.rank - b.rank);
+      for (const k of kids) {
+        if (k.f) { out.push(row(k.f.h, depth, true)); continue; }
+        let d = k.d, label = k.name, path = prefix + k.name;
+        while (d.files.length === 0 && d.dirs.size === 1) {
+          const [only, next] = [...d.dirs.entries()][0];
+          label += `/${only}`; path += `/${only}`; d = next;
+        }
+        const open = !this.hitFolded.has(path);
+        out.push({ key: `?${path}`, rel: path, name: label, dir: true, depth, open, gone: false, disk: false, hitDir: true });
+        if (open) visit(d, `${path}/`, depth + 1);
+      }
+    };
+    visit(root, "", 0);
+    return out;
+  }
+
+  // List or tree for the search results, remembered.
+  toggleHitTree(cx) {
+    this.hitTree = !this.hitTree;
+    setPref("hitTree", this.hitTree);
+    this.touch();
+    cx.notify();
   }
 
   // Exactly the paths git status lists, as a tree: deleted files too, untracked folders and
@@ -872,11 +920,11 @@ export default class FilesView extends View {
     const name = (r.hit ? this.marked(t, r.name, r.hit, rel.length - r.name.length, color ?? t.foreground).flex_none() : div().flex_1().min_w(0).truncate().child(r.name))
       .text_color(ignored ? t.dim : color ?? t.foreground).when(r.gone, (el) => el.line_through()).when(open, (el) => el.font_semibold());
     return row(t, `files-row-${r.key}`, { selected, depth: r.depth })
-      .when(!r.hit, (el) => el.child(r.dir ? svg(ui(r.open ? "chevron-down" : "chevron-right")).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none()))
+      .when(!r.hit || r.inTree, (el) => el.child(r.dir && !r.hit ? svg(ui(r.open ? "chevron-down" : "chevron-right")).size(12).flex_none().text_color(t.dim) : div().w(12).flex_none()))
       .child(image(iconFor(rel, r.dir, r.open)).size(SIZE.icon + 2).flex_none().when(ignored || r.gone, (el) => el.opacity(0.5)))
       .child(name)
-      .when(Boolean(r.hit) && !dirOf(rel), (el) => el.child(div().flex_1()))
-      .when(Boolean(r.hit) && Boolean(dirOf(rel)), (el) => el.child(this.marked(t, dirOf(rel), r.hit, 0, t.dim).flex_1().min_w(0).overflow_hidden().text_size(SIZE.small)))
+      .when(Boolean(r.hit) && (!dirOf(rel) || r.inTree), (el) => el.child(div().flex_1()))
+      .when(Boolean(r.hit) && Boolean(dirOf(rel)) && !r.inTree, (el) => el.child(this.marked(t, dirOf(rel), r.hit, 0, t.dim).flex_1().min_w(0).overflow_hidden().text_size(SIZE.small)))
       .when(Boolean(dots), (el) => el.child(this.dots(t, dots)))
       .when(showLines, (el) => el.child(counts(t, lines[0], lines[1])))
       .child(badge(t, !status || (r.dir && dots) ? "" : statusLetter(status), color).text_right());
@@ -930,6 +978,7 @@ export default class FilesView extends View {
       .child(svg(ui("search")).size(SIZE.icon - 1).flex_none().text_color(this.typing ? t.accent : t.dim))
       .child(Input.new(this.input).flex_1().min_w(0).h_full().text_size(SIZE.text).text_color(t.foreground))
       .when(this.searching && !this.hits?.length, (el) => el.child(div().flex_none().text_size(SIZE.small).text_color(t.dim).frames(["·  ", "·· ", "···"], 260)))
+      .when(Boolean(this.hits?.length), (el) => el.child(iconButton(t, "files-hit-tree", this.hitTree ? "list" : "list-tree", (_e, cx) => this.toggleHitTree(cx), { size: SIZE.button - 4 }).tooltip(this.hitTree ? "Results as a list" : "Results as a tree")))
       .when(Boolean(this.query), (el) => el.child(iconButton(t, "files-clear", "close", (_e, cx) => this.clearSearch(cx), { size: SIZE.button - 4 }).tooltip("Clear (Esc)")))
       .when(this.view === "all" && g.repo && !g.rootIgnored, (el) => el.child(iconButton(t, "files-source", "git-branch", (_e, cx) => this.setSource(git ? "disk" : "git", cx), { on: git, size: SIZE.button - 4 })
         .tooltip(git ? "Searching git's files (ignored ones left out). Click to search the disk" : "Searching the disk, ignored files too. Click to search git's files")));
