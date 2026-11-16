@@ -8,7 +8,7 @@
 // cybertron288/herdr-mods `filetree` (MIT). See NOTICE.md.
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, Popup, v_virtual_list, VirtualListScrollHandle, h_resizable, resizable_panel } from "gpui-base";
-import { theme, settings, watchFolder, notify, home, layout, run } from "herdr";
+import { theme, settings, watchFolder, notify, home, layout, run, shared, setShared } from "herdr";
 import { SIZE, frame, header, subbar, row, iconButton, segmented, empty, textButton, badge, counts, ui } from "../../lib/ui.js";
 import { statusLetter, statusColor } from "../../lib/git.js";
 import { location, slash, baseName } from "../../lib/where.js";
@@ -703,6 +703,7 @@ export default class FilesView extends View {
   previewProps() {
     return {
       on: this.on, root: this.root, path: this.file, rev: null, repoTop: this.git.repo ? slash(this.git.top) : null, wide: this.wide,
+      statusView: this.p.full && !inFull() ? "files" : null,
       // A relative link in the preview (a markdown link to another file).
       onOpen: (rel, _rev, cx) => this.followLink(rel, cx),
       // While the preview edits, typed keys are the editor's, not the tree's shortcuts.
@@ -1098,6 +1099,8 @@ export default class FilesView extends View {
     const top = header(t, { icon: "files", title: "Files", subtitle: this.width >= 380 || this.wide ? this.folderName() : null, actions: this.actions(t) });
     const tree = v_flex().size_full().min_w(0).min_h(0).child(this.branchBar(t)).child(this.searchBar(t)).child(this.list(t));
     if (!this.wide) return root(frame(t, top, tree));
+    // No file open in full mode: the status bar's file facts were this view's, now none.
+    if (!(this.file && this.preview) && shared("geocine.file_status")?.view === "files") setShared("geocine.file_status", null);
     const side = this.file && this.preview ? div().size_full().min_w(0).min_h(0).flex().flex_col().child(this.preview)
       : empty(t, "No file open", "Pick a file on the left");
     return root(frame(t, top, h_resizable("files-split").size_full()
