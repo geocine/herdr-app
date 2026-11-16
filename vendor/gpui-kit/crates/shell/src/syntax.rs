@@ -1,87 +1,28 @@
 // HERDR: built-in pure-Rust syntax highlighting for script editors, adapted from Base's showcase.
-use std::{collections::HashMap, ops::Range, sync::LazyLock};
+// The parse itself (incremental) is syntax_core.rs.
+use std::{collections::HashMap, ops::Range};
 
 use gpui::{Context, HighlightStyle, SharedString, Window};
 use gpui_base::input::{
     EditorState, FoldRange, HighlightStyleResolver, InputEdit, InputHighlighter, Rope,
 };
-use syntect::{
-    parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet},
-    util::LinesWithEndings,
-};
 
-/// Loading the default syntax definitions deserializes a few megabytes, so share
-/// one set across every highlighter instance.
-static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+use crate::syntax_core::Parse;
+#[cfg(test)]
+use crate::syntax_core::find_syntax;
 
-/// A small, WASM-compatible example adapter for Base's parser-independent
-/// highlighting API. Syntect identifies scopes; the application-owned resolver
-/// supplies all colors and font styles.
+/// Base's parser-independent highlighting API over syntect, which identifies scopes; the
+/// application-owned resolver supplies all colors and font styles.
 pub(crate) struct SyntectHighlighter {
     language: SharedString,
-    syntax: &'static SyntaxReference,
-    /// Non-overlapping highlights, ordered by start offset.
-    highlights: Vec<(Range<usize>, &'static str)>,
+    parse: Parse,
     fold_ranges: Vec<FoldRange>,
-    /// Scope ids are cheap to compare but expensive to stringify, so remember
-    /// the semantic name each one maps to.
-    semantic_names: HashMap<Scope, Option<&'static str>>,
 }
 
 impl SyntectHighlighter {
     pub(crate) fn new(language: &str) -> Option<Self> {
-        let syntax = find_syntax(language)?;
-
-        Some(Self {
-            language: language.to_owned().into(),
-            syntax,
-            highlights: Vec::new(),
-            fold_ranges: Vec::new(),
-            semantic_names: HashMap::new(),
-        })
+        Some(Self { language: language.to_owned().into(), parse: Parse::new(language)?, fold_ranges: Vec::new() })
     }
-
-    fn push_highlight(&mut self, range: Range<usize>, scopes: &ScopeStack) {
-        if range.is_empty() {
-            return;
-        }
-
-        let name = scopes.scopes.iter().rev().find_map(|scope| {
-            *self
-                .semantic_names
-                .entry(*scope)
-                .or_insert_with(|| semantic_name(*scope, self.syntax.name == "Markdown"))
-        });
-        if let Some(name) = name {
-            self.highlights.push((range, name));
-        }
-    }
-
-    fn reparse(&mut self, text: &str) {
-        let mut parser = ParseState::new(self.syntax);
-        let mut scopes = ScopeStack::new();
-        let mut offset = 0;
-        self.highlights.clear();
-
-        for line in LinesWithEndings::from(text) {
-            if let Ok(operations) = parser.parse_line(line, &SYNTAX_SET) {
-                let mut cursor = 0;
-                for (index, operation) in operations {
-                    self.push_highlight(offset + cursor..offset + index, &scopes);
-                    let _ = scopes.apply(&operation);
-                    cursor = index;
-                }
-                self.push_highlight(offset + cursor..offset + line.len(), &scopes);
-            }
-            offset += line.len();
-        }
-    }
-}
-
-fn find_syntax(language: &str) -> Option<&'static SyntaxReference> {
-    SYNTAX_SET
-        .find_syntax_by_token(language)
-        .or_else(|| SYNTAX_SET.find_syntax_by_extension(language))
 }
 
 impl InputHighlighter for SyntectHighlighter {
@@ -91,16 +32,15 @@ impl InputHighlighter for SyntectHighlighter {
 
     fn update(
         &mut self,
-        _edit: Option<InputEdit>,
+        edit: Option<InputEdit>,
         text: &Rope,
         folding: bool,
         _window: &mut Window,
         _cx: &mut Context<EditorState>,
     ) {
-        // `syntect` has no incremental mode, so the whole document is reparsed.
         // Read the rope once and reuse that string for folding too.
         let text = text.to_string();
-        self.reparse(&text);
+        self.parse.apply(edit.map(|e| (e.start_byte, e.old_end_byte, e.new_end_byte)), &text);
         self.fold_ranges = if folding {
             brace_fold_ranges(&text)
         } else {
@@ -113,7 +53,7 @@ impl InputHighlighter for SyntectHighlighter {
         range: &Range<usize>,
         resolver: &dyn HighlightStyleResolver,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
-        resolve_styles(&self.highlights, range, resolver)
+        resolve_styles(&self.parse.highlights_in(range), range, resolver)
     }
 
     fn fold_ranges(&self, _: &Rope) -> Vec<FoldRange> {
@@ -159,81 +99,6 @@ fn resolve_styles(
         runs.push((cursor..range.end, HighlightStyle::default()));
     }
     runs
-}
-
-fn semantic_name(scope: Scope, markdown: bool) -> Option<&'static str> {
-    let scope = scope.build_string();
-    // Other grammars, including reStructuredText, use the same markup prefixes.
-    if markdown && let Some(name) = markup_name(&scope) {
-        return Some(name);
-    }
-    let name = if scope.starts_with("comment") {
-        "comment"
-    } else if scope.starts_with("constant.character.escape") {
-        "string.escape"
-    } else if scope.starts_with("string") {
-        "string"
-    } else if scope.starts_with("constant.numeric") {
-        "number"
-    } else if scope.starts_with("constant.language.boolean") {
-        "boolean"
-    } else if scope.starts_with("keyword.operator") {
-        "operator"
-    } else if scope.starts_with("keyword") || scope.starts_with("storage") {
-        "keyword"
-    } else if scope.starts_with("entity.name.function") || scope.starts_with("support.function") {
-        "function"
-    } else if scope.starts_with("entity.name.type")
-        || scope.starts_with("entity.name.class")
-        || scope.starts_with("support.type")
-    {
-        "type"
-    } else if scope.starts_with("variable") {
-        "variable"
-    } else if scope.starts_with("constant") {
-        "constant"
-    } else if scope.starts_with("punctuation") {
-        "punctuation"
-    } else {
-        return None;
-    };
-    Some(name)
-}
-
-/// HERDR: Markdown's scopes, so a Markdown editor shows its structure. A marker
-/// (`#`, `**`, a list bullet) takes its construct's name rather than
-/// `punctuation`, the way VS Code colors it. Lists and links name only their
-/// marker and URL: the list item's own text stays plain.
-fn markup_name(scope: &str) -> Option<&'static str> {
-    const NAMES: &[(&[&str], &str)] = &[
-        (
-            &["markup.heading", "punctuation.definition.heading"],
-            "heading",
-        ),
-        (&["markup.bold", "punctuation.definition.bold"], "strong"),
-        (
-            &["markup.italic", "punctuation.definition.italic"],
-            "emphasis",
-        ),
-        (&["markup.raw", "punctuation.definition.raw"], "code"),
-        (
-            &["markup.quote", "punctuation.definition.blockquote"],
-            "quote",
-        ),
-        (
-            &[
-                "markup.list.numbered.bullet",
-                "markup.list.unnumbered.bullet",
-                "punctuation.definition.list_item",
-            ],
-            "list",
-        ),
-        (&["markup.underline.link"], "link"),
-    ];
-    NAMES
-        .iter()
-        .find(|(prefixes, _)| prefixes.iter().any(|prefix| scope.starts_with(prefix)))
-        .map(|(_, name)| *name)
 }
 
 /// HERDR: a Markdown name a mod gave no color takes the color of a code name,
@@ -348,9 +213,10 @@ mod tests {
 
     fn highlight_names<'a>(language: &str, text: &'a str) -> Vec<(&'a str, &'static str)> {
         let mut highlighter = SyntectHighlighter::new(language).unwrap();
-        highlighter.reparse(text);
+        highlighter.parse.apply(None, text);
         highlighter
-            .highlights
+            .parse
+            .highlights_in(&(0..text.len()))
             .into_iter()
             .map(|(range, name)| (text[range].trim(), name))
             .filter(|(text, _)| !text.is_empty())
