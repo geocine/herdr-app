@@ -9,7 +9,7 @@
 import { View, div, svg, image } from "gpui-kit";
 import { expandTabs } from "../tabs.js";
 import { v_flex, h_flex, Editor, EditorState, TextView, Scrollbar, InputState, Input } from "gpui-base";
-import { theme, settings, watchFolder, exec, readTextFile, writeTextFile } from "herdr";
+import { theme, settings, watchFolder, exec, readTextFile, writeTextFile, shared, setShared } from "herdr";
 import { SIZE, iconButton, textButton, empty, ui, ago } from "../ui.js";
 import { iconFor } from "../icons.js";
 import { slash, dirName, baseName } from "../where.js";
@@ -47,7 +47,10 @@ const GUTTER = 10, RULER = 12;
 // Without a language it is ~free. So text shows plain at once and gets its colors a step later.
 const HL_SYNC = 6000;        // chars colored before the first paint
 const HL_MAX = 160000;       // a code file or fence past this stays plain (one parse would freeze ~0.5 s)
-const EDIT_HL_MAX = 24000;   // editing re-parses the whole text per keystroke: plain past this
+// Editing colors a keystroke's lines only (the highlighter is incremental), but the first
+// parse is the whole text: up to this it is done at once, past it the editor opens plain and
+// gets its colors right after (if nothing was typed yet), up to HL_MAX like the view.
+const EDIT_HL_MAX = 24000;
 const HL_BUDGET = 24;        // ms of coloring per step (Markdown fences), then a frame
 const HL_DELAY = 30;         // ms before a step, so the plain text paints first
 const RULER_MAX = 300;       // overview ruler marks drawn; more are merged by position
@@ -94,7 +97,8 @@ function norm(p) {
   p ??= {};
   return { on: p.on ?? null, root: slash(p.root ?? "").replace(/\/+$/, ""), path: slash(p.path ?? "").replace(/^\.\//, ""),
     rev: p.rev || null, repoTop: p.repoTop ? slash(p.repoTop).replace(/\/+$/, "") : null, wide: Boolean(p.wide), onOpen: typeof p.onOpen === "function" ? p.onOpen : null,
-    onDirty: typeof p.onDirty === "function" ? p.onDirty : null };
+    onDirty: typeof p.onDirty === "function" ? p.onDirty : null, onEditing: typeof p.onEditing === "function" ? p.onEditing : null,
+    statusView: p.statusView || null };
 }
 const ident = (p) => JSON.stringify([p.on, p.root, p.path, p.rev, p.repoTop]);
 
@@ -472,7 +476,7 @@ export default class Preview extends View {
   /** EditorStates take their font and colors at creation: new ones in place (plain first, colored by steps). */
   refont(cx) {
     if (this.code) this.makeCode(cx);
-    if (this.edit) { const v = this.edit.state.value(); this.edit.state.release(); this.edit.state = this.editState(v); }
+    if (this.edit) { const v = this.edit.state.value(); this.edit.state.release(); this.edit.state = this.editState(v); this.colorEdit(cx); }
     const t0 = Date.now();
     for (const b of this.blocks) {
       if (!b.state) continue;
@@ -856,15 +860,37 @@ export default class Preview extends View {
   /** Editing the source now (not the rendered Markdown of the edits). */
   editing() { return Boolean(this.edit) && (this.doc?.kind !== "markdown" || this.source); }
 
-  editState(value) {
-    // Every keystroke re-parses the whole text for colors: a large file is edited plain.
-    const language = value.length <= EDIT_HL_MAX ? lang.forPath(this.p.path) : null, e = this.edit;
+  /** color: "now" (up to EDIT_HL_MAX), "later" (plain first, colorEdit after), false. */
+  editState(value, color = value.length <= EDIT_HL_MAX ? "now" : value.length <= HL_MAX ? "later" : false) {
+    const language = color === "now" || color === true ? lang.forPath(this.p.path) : null, e = this.edit;
     e.plain = !language && Boolean(lang.forPath(this.p.path));
+    e.colorLater = color === "later" && e.plain;
     const state = EditorState.new({ readonly: false, font_family: settings().font_family, font_size: this.codeFont, syntax: syntax(theme()),
-      ...(language ? { language } : {}), soft_wrap: this.wrapOn() || this.doc?.kind === "markdown", value, line_numbers: true });
+      ...(language ? { language } : {}), soft_wrap: this.wrapOn() || this.doc?.kind === "markdown", value: "", line_numbers: true });
+    // The text goes in after: a value given at creation leaves the caret, and the view, at
+    // its end; set_value starts at the top.
+    state.set_value(value);
     state.on("change", (_e, cx) => { if (this.edit === e) this.setDirty(state.value() !== e.base, cx); });
     if (this.hintsNow() && !e.dirty) state.set_line_hints(this.hintsNow());
     return state;
+  }
+
+  /**
+   * A large file opened plain for editing gets its colors a frame later, as a new state with
+   * the same text: only while nothing was typed (a new state would drop the caret and undo).
+   */
+  colorEdit(cx) {
+    const e = this.edit;
+    if (!e?.colorLater) return;
+    cx.timer.after(HL_DELAY, (cx) => {
+      if (this.edit !== e || e.dirty || !e.colorLater) return;
+      const v = e.state.value();
+      if (v !== e.base) return;
+      e.state.release();
+      e.state = this.editState(v, true);
+      e.state.focus?.();
+      cx.notify();
+    });
   }
 
   toggleEdit(cx) {
@@ -873,6 +899,7 @@ export default class Preview extends View {
     const d = this.doc;
     this.edit = { state: null, base: d.text, raw: d.raw, doc: d, dirty: false, conflict: false, saving: false, error: null };
     this.edit.state = this.editState(d.text);
+    this.colorEdit(cx);
     this.source = true;
     if (this.ds) this.closeFind(false);
     // The host stops taking the keyboard and its shortcuts while the editor types.
@@ -1098,6 +1125,7 @@ export default class Preview extends View {
       // A press in the editor bubbles here: leave the keyboard with the editor then.
       .on_mouse_down("left", () => { if (!this.ds && !this.editing()) this.focus.focus(); })
       .on_size_change((size, cx) => { const w = Math.round(size.width); if (w !== this.width) { this.width = w; cx.notify(); } });
+    this.publishStatus();
     if (this.zoomView) return root.child(this.zoomView.render(t, this.zoomFocus, {
       onKey: (e, cx) => this.zoomKeyDown(e, cx),
       onEscape: (cx) => { this.zoomAct("close", cx); cx?.notify(); },
@@ -1106,7 +1134,7 @@ export default class Preview extends View {
     return root.child(this.bar(t)).when(Boolean(this.ds), (el) => el.child(this.findBar(t)))
       .children(this.notices(t))
       .child(div().flex_1().min_h(0).min_w(0).flex().flex_col().child(this.body(t)))
-      .child(this.footer(t));
+      .when(!this.p.statusView, (el) => el.child(this.footer(t)));
   }
 
   narrow() { return this.width !== null && this.width < 340; }
@@ -1190,9 +1218,22 @@ export default class Preview extends View {
     return out;
   }
 
-  footer(t) {
+  /**
+   * Full mode (the host passes statusView, its view's name): the footer's facts go to the app's
+   * status bar instead of a second bar right above it. Published when they change.
+   */
+  publishStatus() {
+    const view = this.p.statusView;
+    if (!view) return;
+    const text = this.footerParts().join(" · ");
+    const now = shared("geocine.file_status");
+    if (now?.view === view && now?.text === text && now?.on === (this.p.on ?? null)) return;
+    setShared("geocine.file_status", { view, text, on: this.p.on ?? null });
+  }
+
+  footerParts() {
     const doc = this.doc, p = this.p, parts = [];
-    if (!p.path) return div();
+    if (!p.path) return parts;
     parts.push(doc?.kind === "binary" ? "Binary" : lang.label(p.path));
     if (doc?.kind === "text") parts.push(plural(doc.lines, "line"));
     if (doc?.kind === "text" && this.codeBare && !this.edit) parts.push("no colors: large file");
@@ -1209,6 +1250,12 @@ export default class Preview extends View {
     if (this.note) parts.push(this.note);
     if (this.polling && !p.on) parts.push("polling");
     if (this.edit) parts.push(this.editing() ? "editing · Ctrl+S save · Ctrl+E done" : "rendered edits · not saved yet");
+    return parts;
+  }
+
+  footer(t) {
+    const p = this.p, parts = this.footerParts();
+    if (!p.path) return div();
     return h_flex().id("pv-foot").h(22).flex_none().px(SIZE.pad + 2).gap(8).items_center().overflow_hidden().bg(t.chrome).border_t(1).border_color(t.border)
       .text_size(11).text_color(t.dim)
       .children(parts.map((x, i) => div().flex_none().when(i === parts.length - 1, (el) => el.flex_shrink(1).min_w(0).truncate()).child(i ? `· ${x}` : x)))
