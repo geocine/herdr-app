@@ -122,7 +122,7 @@ export default class Diff extends View {
     if (!top || !source) { this.files = []; this.loading = false; return; }
     cx.spawn(async (cx) => {
       try {
-        const files = await loadDiff({ on, top, source, paths });
+        const files = await loadDiff({ on, top, source, paths, pause: () => cx.sleep(0) });
         if (id !== this.loadId) return;
         const multi = files.length > 1;
         const old = new Map((this.files ?? []).map(f => [f.path, f]));

@@ -87,7 +87,27 @@ const kindOfMode = (m) => (m ? m.slice(0, 2) : null);   // 10 file, 12 symlink, 
  * Reads `git diff`, `git diff --cached`, `git show`, `git diff --no-index`; also `diff --cc`
  * (combined hunks: a line is removed when any parent column says so, added when one says +).
  */
-export function parseDiff(text, { maxFileLines = MAX_FILE_LINES, maxLines = MAX_LINES } = {}) {
+export function parseDiff(text, opts) {
+  const steps = parseSteps(text, opts);
+  let r;
+  while (!(r = steps.next()).done);
+  return r.value;
+}
+
+/**
+ * parseDiff in pieces of SLICE lines, awaiting pause() between them (the view's
+ * `() => cx.sleep(0)`): a 20,000-line diff took ~100 ms of the UI thread in one go.
+ */
+export async function parseDiffSliced(text, pause, opts) {
+  const steps = parseSteps(text, opts);
+  let r;
+  while (!(r = steps.next()).done) await pause();
+  return r.value;
+}
+
+const SLICE = 1024;   // lines: a few ms of parsing
+
+function* parseSteps(text, { maxFileLines = MAX_FILE_LINES, maxLines = MAX_LINES } = {}) {
   const files = [];
   if (!text) return files;
   const lines = text.split("\n");
@@ -103,6 +123,7 @@ export function parseDiff(text, { maxFileLines = MAX_FILE_LINES, maxLines = MAX_
     files.push(file);
   };
   for (let i = 0; i < lines.length; i++) {
+    if (i % SLICE === SLICE - 1) yield;
     let l = lines[i];
     if (l.endsWith("\r") && !hunk) l = l.slice(0, -1);
     // Inside a hunk, its counts say where it ends (a line may itself start with "diff ").
@@ -274,16 +295,18 @@ async function untrackedDiffs(top, on, paths, known = false) {
  *   its first parent (a root commit: everything added).
  * paths: repo-relative files to limit it to; all when absent.
  */
-export async function loadDiff({ on = null, top, source, paths } = {}) {
+export async function loadDiff({ on = null, top, source, paths, pause = null } = {}) {
   if (!top || !source) return [];
+  // pause: parse in slices, giving the frame back between them (parseDiffSliced).
+  const parse = (text) => (pause ? parseDiffSliced(text, pause) : parseDiff(text));
   const kind = source.kind, spec = pathspec(paths);
-  if (kind === "unstaged") return parseDiff(await run(["diff", ...DIFF_FLAGS, ...spec], top, on));
+  if (kind === "unstaged") return await parse(await run(["diff", ...DIFF_FLAGS, ...spec], top, on));
   if (kind === "staged") {
     // Without a commit yet, --cached shows everything staged (git diff's own rule); an older git
     // that refuses gets the empty tree.
     const args = ["diff", ...DIFF_FLAGS, "--cached", "-M"];
-    try { return parseDiff(await run([...args, ...spec], top, on)); }
-    catch (e) { if (await hasHead(top, on)) throw e; return parseDiff(await run([...args, await emptyTree(top, on), ...spec], top, on)); }
+    try { return await parse(await run([...args, ...spec], top, on)); }
+    catch (e) { if (await hasHead(top, on)) throw e; return await parse(await run([...args, await emptyTree(top, on), ...spec], top, on)); }
   }
   if (kind === "untracked") return untrackedDiffs(top, on, paths, true);
   if (kind === "head") {
@@ -293,7 +316,7 @@ export async function loadDiff({ on = null, top, source, paths } = {}) {
       catch (e) { if (await hasHead(top, on)) throw e; return run(["diff", ...DIFF_FLAGS, "-M", await emptyTree(top, on), ...spec], top, on); }
     };
     const [text, fresh] = await Promise.all([tracked(), untrackedDiffs(top, on, paths)]);
-    const files = parseDiff(text), seen = new Set(files.map(f => f.path));
+    const files = await parse(text), seen = new Set(files.map(f => f.path));
     for (const f of fresh) if (!seen.has(f.path)) files.push(f);
     if (fresh.more) files.more = fresh.more;
     return files;
@@ -301,7 +324,7 @@ export async function loadDiff({ on = null, top, source, paths } = {}) {
   if (kind === "commit") {
     const rev = source.rev;
     if (!rev) return [];
-    return parseDiff(await run(["show", ...DIFF_FLAGS, "--format=", "-m", "--first-parent", "-M", rev, ...spec], top, on));
+    return await parse(await run(["show", ...DIFF_FLAGS, "--format=", "-m", "--first-parent", "-M", rev, ...spec], top, on));
   }
   throw new Error(`Unknown diff source: ${kind}`);
 }
