@@ -451,7 +451,8 @@ fn describe_with_values(
     let policy = Policy::new()
         .with_storage_path(staged.0.join(format!("store-{}.json", NEXT_STORE.fetch_add(1, Ordering::Relaxed))))
         .with_capabilities(Capabilities::new().storage(true).read_roots([staged.0.clone()]))
-        .with_host_module(module(values, calls.clone()))?;
+        .with_host_module(module(values, calls.clone()))?
+        .with_host_module(crate::fork_native::module())?; // HERDR FORK: "geocine"
     let runtime = ShellRuntime::new_isolated()?;
     let root = setup.map(|s| staged.wrapper(entry, s)).unwrap_or_else(|| staged.0.join(entry));
     let window = cx.add_window(|_, _| Empty);

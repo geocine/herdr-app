@@ -6,6 +6,10 @@
 // (Apache-2.0); the sh index follows cybertron288/herdr-mods `filetree` (MIT), itself a port of
 // claude-code-filetree (MIT). The PowerShell index is new here. See NOTICE.md.
 import { exec, window, home } from "herdr";
+// This fork's native helpers (src/fork_native.rs): this computer's folders without starting a
+// process (Git's sh, cmd and PowerShell took 100-450 ms each, mostly starting). Other machines
+// keep the shell paths below, and so does this one if a native call fails.
+import * as native from "geocine";
 
 // The tree is a virtual list, so a long folder (node_modules) shows whole up to PER_FOLDER.
 // listDir reads at most READ_AT_MOST entries and sorts them before cutting; the sort is one native
@@ -156,6 +160,12 @@ async function viaCmd(path) {
 export async function listDirs(paths, on) {
   const out = new Map();
   if (!paths.length) return out;
+  if (!on) {
+    try {
+      for (const r of await native.listDirs(paths, PER_FOLDER)) out.set(r.path, r.error ? new Error(r.error) : { entries: r.entries, more: r.more });
+      return out;
+    } catch {}
+  }
   if (localWindows(on)) {
     const sh = await windowsSh();
     if (sh) {
@@ -167,12 +177,17 @@ export async function listDirs(paths, on) {
 }
 
 // Whether listDirs lists many folders for the price of one (worth reading ahead).
-export async function cheapMany(on) { return localWindows(on) && Boolean(await windowsSh()); }
+export async function cheapMany(on) { return !on || (localWindows(on) && Boolean(await windowsSh())); }
 
 // One folder: { entries: [{ name, dir }] (folders first, natural order, the first PER_FOLDER),
 // more: it held more }. `.git` is left out. A link to a folder is a folder.
 export async function listDir(path, on) {
   let list;
+  if (!on) {
+    const r = (await native.listDirs([path], PER_FOLDER).catch(() => null))?.[0];
+    if (r?.error) throw new Error(r.error);
+    if (r) return { entries: r.entries, more: r.more };
+  }
   if (localWindows(on)) {
     const sh = await windowsSh();
     if (sh) {
@@ -208,6 +223,10 @@ const atHome = (root, homeDir) => {
 export async function diskIndex(root, on, homeDir) {
   const home = atHome(root, on ? null : homeDir);
   const depth = home ? HOME_DEPTH : DEPTH;
+  if (!on) {
+    const r = await native.walk(root, { depth, prune: PRUNE, topPrune: home ? HOME_PRUNE : [], maxDirs: INDEX_DIRS, maxFiles: INDEX_PATHS }).catch(() => null);
+    if (r) return { dirs: new Set(r.dirs), all: [...r.dirs, ...r.files], full: !r.cut.length, cut: r.cut };
+  }
   if (localWindows(on)) return windowsIndex(root, on, depth, home);
   try { return await shIndex(root, on, depth, home); }
   catch (e) { if (on && noSh(e)) return windowsIndex(root, on, depth, home); throw e; }
@@ -291,6 +310,10 @@ function parseIndex(stdout, sep) {
 export async function kinds(root, rels, on) {
   const found = new Map();
   if (!rels.length) return found;
+  if (!on) {
+    const r = await native.kinds(root, rels).catch(() => null);
+    if (r) { for (const [rel, kind] of r) found.set(rel, kind); return found; }
+  }
   const viaPowerShell = async () => {
     for (let i = 0; i < rels.length; i += 300) {
       const piece = rels.slice(i, i + 300).map(psQuote).join(",");
