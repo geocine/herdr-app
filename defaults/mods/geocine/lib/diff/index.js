@@ -15,6 +15,9 @@ import { SIZE, ui, monoFont, empty, textButton, iconButton, counts, badge, subba
 import { statusColor, statusLetter } from "../git.js";
 import { iconFor } from "../icons.js";
 import { loadDiff } from "./parse.js";
+import { readDoc, mb } from "../preview/source.js";
+import { isImage } from "../preview/lang.js";
+import { gitRead } from "../git.js";
 import { buildItems, fileItems, fileKey, isBuilt, expandTabs, ROW, FILE, CHAR, MAX_COLUMNS, LARGE } from "./rows.js";
 import { tokenize, langOf } from "./syntax.js";
 
@@ -34,7 +37,7 @@ let instances = 0;
 // names read and write a per-instance record (defined on the class below).
 const held = new WeakMap();
 const hold = (view) => { let h = held.get(view); if (!h) held.set(view, (h = {})); return h; };
-const HELD = ["files", "itemList", "byKey", "sizes", "sizesAll", "sizesFor", "trailingAt", "marks"];
+const HELD = ["files", "itemList", "byKey", "sizes", "sizesAll", "sizesFor", "trailingAt", "marks", "pics"];
 
 const zoom = () => Number(settings()?.zoom) || 1;
 // A theme color with an alpha byte (theme colors are #rrggbb; others are used as they are).
@@ -125,6 +128,7 @@ export default class Diff extends View {
         const old = new Map((this.files ?? []).map(f => [f.path, f]));
         for (const f of files) {
           f.large = multi && f.adds + f.dels > LARGE;
+          f.image = isImage(f.path);
           // A reload keeps a large file shown when its diff is the same.
           if (old.get(f.path)?.shown && old.get(f.path).newSha === f.newSha) f.shown = true;
         }
@@ -145,7 +149,95 @@ export default class Diff extends View {
           cx.notify();
         }
       }
+      // The pictures of changed images come after the files show, a few reads at a time.
+      if (id === this.loadId) await this.pictures(id, cx);
     });
+  }
+
+  // ---- images --------------------------------------------------------------
+
+  /**
+   * Where an image's two sides are read from: a revision git archive reads ("HEAD", "<rev>^",
+   * "index": the index as a tree), "disk" (the file as it is now), or null (no such side).
+   */
+  sides(f) {
+    const s = this.p.source ?? {}, added = f.status === "A" || f.untracked, gone = f.status === "D";
+    const before = added ? null : s.kind === "commit" ? `${s.rev}^` : s.kind === "unstaged" ? "index" : "HEAD";
+    const after = gone ? null : s.kind === "commit" ? s.rev : s.kind === "staged" ? "index" : "disk";
+    return [before, after];
+  }
+
+  /** One image diff's pictures, by what they show: a file on disk without a known blob reads again on reload. */
+  picKey(f) {
+    const [, after] = this.sides(f), loose = after === "disk" && !f.newSha;
+    return JSON.stringify([this.p.on ?? null, this.p.top, this.p.source, f.oldPath, f.path, f.status, f.oldSha, f.newSha, loose ? this.p.stamp ?? null : 0]);
+  }
+
+  /** Reads the changed images' pictures (cached copies, as the Preview draws them), drawing each as it comes. */
+  async pictures(id, cx) {
+    const { on = null, top } = this.p;
+    if (!top) return;
+    if (!this.pics) this.pics = new Map();
+    const want = (this.files ?? []).filter(f => f.image && !this.pics.has(this.picKey(f))).slice(0, 40);
+    if (!want.length) return;
+    const root = String(top).replace(/[\\/]+$/, "");
+    let tree = null;   // the index as a tree: git archive reads trees, not the index
+    const indexTree = () => (tree ??= gitRead(["write-tree"], top, { on }).then(r => (r.code === 0 ? r.stdout.trim() : null)).catch(() => null));
+    const read = async (path, from) => {
+      const abs = `${root}/${path}`;
+      if (from === "disk") return readDoc({ on, abs, rev: null, repo: null });
+      const rev = from === "index" ? await indexTree() : from;
+      if (!rev) return { kind: "error", message: "Cannot read the index" };
+      return readDoc({ on, abs, rev, repo: { top: root } });
+    };
+    const jobs = [];
+    for (const f of want) {
+      const got = { old: undefined, new: undefined }, [before, after] = this.sides(f);
+      this.pics.set(this.picKey(f), got);
+      jobs.push([got, "old", before === null ? null : () => read(f.oldPath ?? f.path, before)]);
+      jobs.push([got, "new", after === null ? null : () => read(f.path, after)]);
+    }
+    // A few at a time: each is a process or two (a copy into the cache).
+    const worker = async () => {
+      for (let job; (job = jobs.shift());) {
+        const [got, side, run] = job;
+        let d = null;
+        if (run) { try { d = await run(); } catch (e) { d = { kind: "error", message: String(e?.message ?? e) }; } }
+        if (id !== this.loadId) return;
+        got[side] = d;
+        cx.notify();
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+  }
+
+  /** An image's before and after, side by side, each fitted to its half. */
+  picturePair(t, item) {
+    const f = item.file, got = this.pics?.get(this.picKey(f)) ?? { old: undefined, new: undefined };
+    const inset = this.inset(false), gap = 12, pad = SIZE.pad;
+    const boxW = Math.max(40, (this.width - inset - pad - gap) / 2), boxH = item.size - 40;
+    const facts = (d) => (d?.kind === "image" ? [d.w && d.h ? `${d.w} × ${d.h}` : "", d.size ? mb(d.size) : ""].filter(Boolean).join(" · ") : "");
+    const side = (label, color, d, none) => v_flex().flex_1().min_w(0).gap(4)
+      .child(h_flex().h(18).gap(6).items_center().text_size(SIZE.small)
+        .child(div().flex_none().text_color(color).child(label))
+        .child(div().min_w(0).truncate().text_color(t.dim).child(facts(d))))
+      .child(h_flex().w_full().h(boxH).items_center().justify_center().overflow_hidden().rounded(SIZE.radius)
+        .border_1().border_color(t.border).bg(t.surface)
+        .child(this.picture(t, d, none, boxW - 6, boxH - 6)));
+    return h_flex().w_full().h(item.size).pl(inset).pr(pad).py(8).gap(gap).border_b(1).border_color(t.border)
+      .child(side("Before", t.ansi1, got.old, "Not there before"))
+      .child(side("After", t.ansi2, got.new, "Deleted"));
+  }
+
+  picture(t, d, none, w, h) {
+    const say = (text) => div().px(8).text_size(SIZE.small).text_color(t.dim).truncate().child(text);
+    if (d === undefined) return svg("mods/workspace-chrome/spinner.svg").size(14).text_color(t.dim).spin(900);
+    if (d === null) return say(none);
+    if (d.kind !== "image") return say(d.message ?? "Cannot show this image");
+    if (!(d.w && d.h)) return image(d.src).max_w(w).max_h(h);
+    // Small pictures (icons) are drawn up to 4 times larger; big ones fit.
+    const s = Math.min(w / d.w, h / d.h, Math.max(d.w, d.h) < 64 ? 4 : 1);
+    return image(d.src).w(Math.max(1, Math.round(d.w * s))).h(Math.max(1, Math.round(d.h * s)));
   }
 
   // ---- state ---------------------------------------------------------------
@@ -415,6 +507,7 @@ export default class Diff extends View {
           .child(div().flex_none().text_color(t.ansi4).opacity(0.8).child(range))
           .when(Boolean(h.context), el => el.child(div().min_w(0).truncate().text_color(t.muted).child(h.context)));
       }
+      case "image": return this.picturePair(t, item);
       case "note":
         return h_flex().w_full().h(item.size).px(SIZE.pad).gap(6).items_center().text_size(SIZE.small).border_b(1).border_color(t.border)
           .text_color(item.action ? t.accent : t.dim).when(Boolean(item.action), el => el.cursor_pointer())

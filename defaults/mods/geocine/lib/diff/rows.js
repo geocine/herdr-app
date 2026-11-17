@@ -2,8 +2,8 @@
 // `extras/mods/review/rows.js` (Apache-2.0): runs of lines per item, split pairs, one height scale.
 // See NOTICE.md.
 
-// Heights: a code line, a hunk header, a note under a header, a file header.
-export const ROW = 20, HUNK = 22, NOTE = 28, FILE = 32;
+// Heights: a code line, a hunk header, a note under a header, a file header, an image's before/after.
+export const ROW = 20, HUNK = 22, NOTE = 28, FILE = 32, IMAGE = 240;
 // A 12px mono column (JetBrains Mono, Geist Mono and most terminal fonts are close to it).
 export const CHAR = 7.2;
 // Past this many columns a line is cut, not scrolled to.
@@ -108,6 +108,11 @@ export function fileItems(file, key, split) {
   const done = () => (file.built = { tag, items, most, digits });
   const lines = file.hunks.reduce((n, h) => n + h.lines.length, 0);
   if (file.large && !file.shown) { items.push({ key: `l:${key}`, kind: "note", file, text: `Large diff · ${lines.toLocaleString("en-US")} lines · click to show`, action: "show", size: NOTE }); return done(); }
+  // An image (file.image): its pictures before and after; an SVG's text diff follows them.
+  if (file.image) {
+    items.push({ key: `i:${key}`, kind: "image", file, size: IMAGE });
+    if (file.binary) return done();
+  }
   if (file.binary) { items.push({ key: `n:${key}`, kind: "note", file, text: "Binary file · no text diff", size: NOTE }); return done(); }
   if (!file.hunks.length) {
     const text = file.status === "R" ? "Renamed without changes" : file.status === "C" ? "Copied without changes" : file.status === "T" ? "File type changed" : file.oldMode && file.newMode && file.oldMode !== file.newMode ? `Mode ${file.oldMode} → ${file.newMode}` : "No content changes";
