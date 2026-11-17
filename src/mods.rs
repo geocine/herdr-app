@@ -99,6 +99,7 @@ pub fn write_workspace() -> std::io::Result<()> {
         let _ = std::fs::remove_file(dir.join("CLAUDE.md"));
     }
     write_if_changed(&dir.join("herdr.d.ts"), DECLARATIONS)?;
+    write_if_changed(&dir.join("geocine.d.ts"), crate::fork_native::DECLARATIONS)?; // HERDR FORK
     let types = gpui_shell::type_declarations(&gpui_shell::FrozenComponentRegistry::default());
     write_if_changed(&dir.join("gpui-kit.d.ts"), &types)?;
     let _ = std::fs::remove_dir_all(frame_dir());
@@ -1457,6 +1458,7 @@ pub fn install_policy() -> async_channel::Receiver<Request> {
     gpui_shell::policy::update_default(|p| {
         p.with_capabilities(capabilities())
             .with_host_module(module(Instance { name: String::new(), props: Value::Null }, 0))
+            .and_then(|p| p.with_host_module(crate::fork_native::module())) // HERDR FORK: "geocine"
             .expect("herdr module is valid")
     });
     let (tx, rx) = async_channel::unbounded();
@@ -1496,6 +1498,7 @@ fn mod_policy(inst: &Instance) -> (u64, gpui_shell::policy::Policy) {
         .with_capabilities(capabilities_at(home(), app_dir(), inst.name == "frame-palette"))
         .with_shared_storage_path(dir.join(file))
         .with_host_module(module(inst.clone(), copy))
+        .and_then(|p| p.with_host_module(crate::fork_native::module())) // HERDR FORK: "geocine"
         .expect("herdr module is valid");
     (copy, policy)
 }

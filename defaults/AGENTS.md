@@ -201,7 +201,9 @@ its rail and back, as its fold button does (`geocine.sidebar`, in the
 `layout:geocine` keys section), and the `geocine` mod drawing the tab bar and the side panel's Files, Changes and Graph
 (`{ "mod": "geocine", "props": { "view": "tabs" | "files" | "changes" | "graph" } }`;
 `view: "full"` is full mode, an overlay with list and detail side by side).
-`mods/geocine/DESIGN.md` describes its parts. Add a layout by
+`mods/geocine/DESIGN.md` describes its parts. Mods can also import this fork's
+native helpers from `"geocine"` (`listDirs`, `walk`, `kinds`, `copyFile`; see
+`geocine.d.ts`): this computer's folders and files without starting a process. Add a layout by
 writing a new file. The Files panel supports Windows folder paths with spaces,
 parentheses and apostrophes, and preserves Unicode file and folder names
 (including Chinese). Directory links expand as folders; their contents load

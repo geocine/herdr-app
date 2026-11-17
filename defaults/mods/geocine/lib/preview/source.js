@@ -6,6 +6,7 @@
 // the app's folder.
 // Adapted from bohumil/herdr-file-preview `source.js` and `commits.js` (MIT). See NOTICE.md.
 import { exec, readTextFile, appHome, window } from "herdr";
+import { copyFile } from "geocine";   // this fork's native copy (src/fork_native.rs)
 import * as fs from "fs/promises";
 import { gitRead } from "../git.js";
 import { slash, dirName, baseName } from "../where.js";
@@ -170,7 +171,7 @@ async function probeLocal(abs) {
  */
 async function probeCopy(abs) {
   const dir = cacheDir() + cacheName(abs, "probe"), name = baseName(abs);
-  const c = await robocopy(abs, dir, PROBE_MAX);
+  const c = await copyIn(abs, dir, PROBE_MAX);
   if (!c) return null;
   if (c.missing) { removeTree(dir); return { kind: "missing", message: "This file no longer exists" }; }
   try {
@@ -293,11 +294,18 @@ function cacheName(abs, ext) {
 }
 
 /**
- * Copies one local file into `dir` (keeping its name) with robocopy: a real program, so no
- * shell parses the path (spaces, &, ^, %, parentheses, Unicode are safe), ~25 ms against
- * PowerShell's ~400. Files over `max` bytes are listed, not copied.
- * -> { copied, size, missing } | null when robocopy can't run or fails.
+ * Copies one local file into `dir` (keeping its name): natively (no process, well under a
+ * millisecond), else with robocopy, a real program, so no shell parses the path (spaces, &, ^,
+ * %, parentheses, Unicode are safe), ~25 ms against PowerShell's ~400. Files over `max` bytes
+ * are measured, not copied.
+ * -> { copied, size, missing } | null when neither can copy it.
  */
+async function copyIn(abs, dir, max) {
+  const native = await copyFile(abs, dir, max).catch(() => null);
+  if (native) return native;
+  return robocopy(abs, dir, max);
+}
+
 async function robocopy(abs, dir, max) {
   let src = winPath(dirName(abs));
   const name = baseName(abs);
@@ -350,7 +358,7 @@ async function headOf(path) {
 async function localImage(abs) {
   const ext = extension(abs);
   if (!isWindows(null)) return remoteImage(abs, null);
-  const key = cacheName(abs, ""), c = await robocopy(abs, cacheDir() + key, IMAGE_MAX);
+  const key = cacheName(abs, ""), c = await copyIn(abs, cacheDir() + key, IMAGE_MAX);
   if (!c) return { kind: "error", message: "Cannot read this image" };
   if (c.missing) { removeTree(cacheDir() + key); return { kind: "missing", message: "This file no longer exists" }; }
   if (!c.copied) { removeTree(cacheDir() + key); return { kind: "error", message: `Image too large to preview (${mb(c.size)})` }; }
