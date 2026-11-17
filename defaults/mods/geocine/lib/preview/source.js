@@ -124,9 +124,10 @@ export function classify(path, text, cut, size) {
  *  | { kind: "image", src, w, h, size }
  *  | { kind: "missing" | "binary" | "error", message }
  */
-export async function readDoc({ on, abs, rev, repo }) {
-  if (rev) return readAt({ on, abs, rev, repo });
-  if (isImage(abs)) return on ? remoteImage(abs, on) : localImage(abs);
+/** asText: an image that is text too (SVG) read as its code. */
+export async function readDoc({ on, abs, rev, repo, asText = false }) {
+  if (rev) return readAt({ on, abs, rev, repo, asText });
+  if (isImage(abs) && !asText) return on ? remoteImage(abs, on) : localImage(abs);
   let text;
   try { text = await readTextFile(abs, { on }); }
   catch {
@@ -257,13 +258,13 @@ export function revSpec(abs, rev, repo) {
   return { cwd: dirName(abs), spec: `${rev}:./${abs.split("/").pop()}`, rel: null };
 }
 
-async function readAt({ on, abs, rev, repo }) {
+async function readAt({ on, abs, rev, repo, asText = false }) {
   const { cwd, spec } = revSpec(abs, rev, repo);
   const s = await gitRead(["cat-file", "-s", spec], cwd, { on }).catch(() => null);
   if (!s) return { kind: "error", message: on ? `Cannot run git on ${on}` : "Cannot run git" };
   if (s.code !== 0) return { kind: "missing", message: "This file is not in that commit" };
   const size = Number(s.stdout.trim());
-  if (isImage(abs)) return revImage({ on, abs, rev, repo, size });
+  if (isImage(abs) && !asText) return revImage({ on, abs, rev, repo, size });
   if (size > REV_MAX) return { kind: "error", message: `Too large to show at a commit (${mb(size)})` };
   const r = await gitRead(["cat-file", "blob", spec], cwd, { on, timeout: 30000 }).catch(() => null);
   if (!r || r.code !== 0) return { kind: "error", message: firstLine(r?.stderr) || "Cannot read this file at that commit" };

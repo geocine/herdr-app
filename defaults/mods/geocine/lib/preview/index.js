@@ -36,6 +36,7 @@ const MAX_DIAGRAM_W = 640;   // diagram width cap at 100 %
 const COL_W = 860;           // reading column cap at 100 %; scales with the zoom
 const LEVELS = [0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 const ZOOM_KEY = "preview.zoom", WRAP_KEY = "preview.wrap", BLAME_KEY = "preview.blame.on";   // new name: blame starts off, whatever the old switch said
+const SVG_KEY = "preview.svg.code";
 const BLAME_W = 210;         // the blame column (full mode)
 const BLAME_DELAY = 150;     // ms after the file shows before git blame starts
 const DEBOUNCE = 200, MAX_WAIT = 1000;   // live reload: agents write in bursts
@@ -143,6 +144,7 @@ export default class Preview extends View {
     this.codeFont = Math.round(FONT * this.textZoom);
     this.wrap = localStorage.getItem(WRAP_KEY) === "1";
     this.blameCol = localStorage.getItem(BLAME_KEY) === "1";   // blame shown (off until turned on): the line notes, and full mode's column
+    this.svgCode = localStorage.getItem(SVG_KEY) === "1";   // an SVG shown as its code, not drawn
     this.blame = null;    // { rows, commits } of the file on disk (blame.js), null until known
     this.blameKey = null; // what this.blame was read for: { doc, st }
     this.blameHints = null;
@@ -231,7 +233,7 @@ export default class Preview extends View {
     const gen = this.gen, seq = ++this.seq;
     cx.spawn(async (cx) => {
       let doc;
-      try { doc = await readDoc({ on: p.on, abs, rev: p.rev, repo: p.repoTop ? { top: p.repoTop } : null }); }
+      try { doc = await readDoc({ on: p.on, abs, rev: p.rev, repo: p.repoTop ? { top: p.repoTop } : null, asText: this.svgCode && this.isSvg() }); }
       catch (e) { doc = { kind: "error", message: String(e?.message ?? e) }; }
       if (this.seq !== seq || this.gen !== gen) return;
       this.loading = false;
@@ -940,6 +942,17 @@ export default class Preview extends View {
     cx.notify();
   }
 
+  isSvg() { return lang.extension(this.p.path ?? "") === "svg"; }
+
+  /** An SVG: drawn, or its code (which can be searched, blamed and edited like any text). */
+  toggleSvg(cx) {
+    if (this.edit) return;
+    this.svgCode = !this.svgCode;
+    try { localStorage.setItem(SVG_KEY, this.svgCode ? "1" : "0"); } catch {}
+    this.load(cx);
+    cx.notify();
+  }
+
   /** Markdown while editing: the source, or the edits rendered (they stay). */
   toggleSource(cx) {
     const e = this.edit;
@@ -1160,6 +1173,8 @@ export default class Preview extends View {
         .child(div().size(7).rounded(4).bg(t.ansi3)).when(!narrow, (e) => e.child("Modified"))))
       .child(div().flex_1())
       .children(this.editButtons(t))
+      .when(this.isSvg() && Boolean(doc), (el) => el.child(iconButton(t, "pv-svg", this.svgCode ? "image" : "code", (_e, cx) => this.toggleSvg(cx), { on: this.svgCode, disabled: Boolean(this.edit) })
+        .tooltip(this.edit ? "Stop editing to show the picture" : this.svgCode ? "Show the picture" : "Show the SVG code")))
       .when(this.findable(), (el) => el.child(iconButton(t, "pv-find", "search", (_e, cx) => this.openFind(cx), { on: Boolean(this.ds) })))
       .when(this.canBlame() && (doc?.kind === "text" || this.editing()), (el) => el.child(iconButton(t, "pv-blame", "history", (_e, cx) => this.toggleBlame(cx), { on: this.blameCol }).tooltip(this.blameCol ? "Hide blame" : "Show blame")))
       .when(doc?.kind === "text", (el) => el.child(iconButton(t, "pv-wrap", "wrap-text", (_e, cx) => this.toggleWrap(cx), { on: this.wrapOn(), disabled: lang.wraps(lang.forPath(p.path)) })))
