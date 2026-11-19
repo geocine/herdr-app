@@ -43,6 +43,7 @@ const SHIPPED_KEYS: &[&str] = &[
     // The geocine fork's, before full mode had its keys.
     include_str!("keys/shipped/geocine-20261114-keys.json"),
     include_str!("keys/shipped/geocine-20261116-keys.json"),
+    include_str!("keys/shipped/geocine-20261117-keys.json"),
 ];
 #[cfg(any(target_os = "macos", test))]
 const SHIPPED_MACOS_KEYS: &[&str] = &[

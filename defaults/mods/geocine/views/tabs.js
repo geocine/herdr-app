@@ -2,7 +2,7 @@
 // panel's buttons (Files, Changes, Graph, whichever the layout's "panel-body" stack has and
 // Settings leaves on) and full mode. The open panel, and full mode, are remembered per space.
 //
-// Keys (keys.json, "geocine.<command>"): sidebar (Ctrl+B), full (Ctrl+Shift+Enter: the panel
+// Keys (keys.json, "geocine.<command>"): sidebar (Ctrl+Shift+B; Ctrl+B outside terminals), full (Ctrl+Shift+Enter: the panel
 // grown over the terminals, or back), changes (Ctrl+Shift+D), graph (Ctrl+Shift+G), goto
 // (Ctrl+Shift+R: the Files view's search), open (a file or change from the command
 // palette, in full mode: shared "geocine.open"). A view's key opens it, in full
@@ -20,7 +20,7 @@ const PANELS = [
 ];
 
 // Folds the sidebar to its rail (icons only) or back to the width it had, as the sidebar's own
-// fold button does (workspace-chrome); a hidden sidebar comes back. Ctrl+B: "geocine.sidebar".
+// fold button does (workspace-chrome); a hidden sidebar comes back. Ctrl+Shift+B (Ctrl+B outside terminals): "geocine.sidebar".
 function foldSidebar() {
   const sidebar = find(layout(), "sidebar");
   if (!sidebar) return;
