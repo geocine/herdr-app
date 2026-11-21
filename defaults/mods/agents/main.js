@@ -362,6 +362,8 @@ export default class Agents extends View {
           cx.notify();
         })
         .on_click(() => run("pane.focus", { pane: a.pane }))
+        // HERDR FORK: right-click: the agent's tab menu (Rename, New tab, Close), as the tab bar's.
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: a.tab, space: a.space } } }); })
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
           .when(subs.length > 0, el => el.on_click((_e, cx) => {
             cx.stop_propagation();
