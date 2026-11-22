@@ -170,6 +170,40 @@ export default class Agents extends View {
     run("terminal.peek", { terminal: addr });
   }
 
+  // HERDR FORK: a hovered row shows its terminal's address (t54); a click copies it,
+  // to name that terminal to an agent or to hc.
+  addr(t, address) {
+    const copied = this.copied === address;
+    return div()
+      .id(`addr-${address}`)
+      .flex_none()
+      .px(4)
+      .h(17)
+      .rounded(4)
+      .flex()
+      .items_center()
+      .text_size(10.5)
+      .text_color(copied ? t.foreground : t.dim)
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip(copied ? "Copied" : `Copy ${address}`)
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        cx.write_to_clipboard(address);
+        this.copied = address;
+        cx.notify();
+      })
+      .child(copied ? "copied" : address);
+  }
+
+  // HERDR FORK: rows track the pointer for the address chip; leaving one forgets its "copied".
+  hover(address, on, cx) {
+    if (on) this.hovered = address;
+    else if (this.hovered === address) this.hovered = null;
+    if (!on && this.copied === address) this.copied = null;
+    cx.notify();
+  }
+
   // Live sub-agents of `addr`, depth first, each with the tree lines in front of it.
   tree(all, addr, lead = []) {
     const kids = all.filter((k) => k.parent === addr && k.state === "live");
@@ -199,12 +233,14 @@ export default class Agents extends View {
       .text_size(12.5)
       .when(on, (el) => el.bg(t.raised))
       .hover((s) => s.bg(t.hover))
+      .on_hover((h, cx) => this.hover(k.address, h, cx))
       .on_click(() => (this.listed.has(k.address) ? run("pane.focus", { terminal: k.address }) : this.peek(k.address)))
       .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()
         .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
         .when(l === "└" || l === "├", el => el.border_b(1.5).rounded_bl(6))))
       .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))
       .child(div().flex_1().truncate().text_color(on ? t.foreground : t.muted).child(k.name || k.template || k.program?.name || k.address))
+      .when(this.hovered === k.address, (el) => el.child(this.addr(t, k.address)))
       .child(this.status(t, { status: st }, compact));
   }
 
@@ -356,11 +392,7 @@ export default class Agents extends View {
         .when(a.focused, (el) => el.bg(t.selected))
         .cursor_pointer()
         .hover((s) => s.bg(t.hover))
-        .on_hover((on, cx) => {
-          if (on) this.hovered = a.address;
-          else if (this.hovered === a.address) this.hovered = null;
-          cx.notify();
-        })
+        .on_hover((on, cx) => this.hover(a.address, on, cx))
         .on_click(() => run("pane.focus", { pane: a.pane }))
         // HERDR FORK: right-click: the agent's tab menu (Rename, New tab, Close), as the tab bar's.
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: a.tab, space: a.space } } }); })
@@ -375,7 +407,7 @@ export default class Agents extends View {
           .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`\u00b7 ${more}`))))
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
         .when(subs.length > 0, el => el.child(fold(a, subs)))
-        .when(this.hovered === a.address, el => el.child(pin))
+        .when(this.hovered === a.address, el => el.child(this.addr(t, a.address)).child(pin))
         .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
         .child(this.status(t, a, byPriority && !isPinned));
     };
