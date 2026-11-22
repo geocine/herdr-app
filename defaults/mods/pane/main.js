@@ -56,6 +56,29 @@ export default class Pane extends View {
       .child(svg(`mods/pane/${icon}.svg`).size(14));
   }
 
+  // HERDR FORK: the terminal's address, to name it to an agent or to hc; a click copies it.
+  address(t, address) {
+    return div()
+      .id(`ph-a-${address}`)
+      .flex_none()
+      .px(4)
+      .h(17)
+      .rounded(4)
+      .flex()
+      .items_center()
+      .text_color(this.copied ? t.foreground : t.dim)
+      .cursor_pointer()
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip(this.copied ? "Copied" : `Copy ${address}`)
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        cx.write_to_clipboard(address);
+        this.copied = true;
+        cx.notify();
+      })
+      .child(this.copied ? `${address}  copied` : address);
+  }
+
   render(cx) {
     const t = theme();
     const p = this.me();
@@ -76,11 +99,13 @@ export default class Pane extends View {
       .when(!bottom, el => el.border_b(1))
       .border_color(t.border)
       .text_size(12)
-      .on_hover((hovered, cx) => { this.hovered = hovered; cx.notify(); })
+      .on_hover((hovered, cx) => { this.hovered = hovered; if (!hovered) this.copied = false; cx.notify(); })
       .on_click(() => run("pane.focus", { pane }))
       .when(Boolean(pic), (el) => el.child(pic))
       .child(div().flex_none().truncate().max_w(260).font_medium().text_color(t.foreground).child(name))
-      .child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd)))
+      // HERDR FORK: hovered, the folder gives way to the terminal's address (t54); a click copies it.
+      .when(!(this.hovered && p.terminal), el => el.child(div().flex_1().truncate().text_color(t.dim).child(folder(p.cwd))))
+      .when(Boolean(this.hovered && p.terminal), el => el.child(div().flex_1().min_w(0).flex().child(this.address(t, p.terminal))))
       .when(st === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
       .when(st === "blocked", el => el.child(div().flex_none().px(6).h(18).flex().items_center().rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).child("Needs you")))
       .when(st === "done", el => el.child(div().size(7).flex_none().rounded(4).bg(t.done)))
