@@ -2744,7 +2744,7 @@ impl AppWindow {
             {
                 // Core's shell is Git Bash (or another POSIX one): agents start in it too,
                 // as a login shell so its PATH is set up, and it stays when the agent exits.
-                return unix_agent_argv(sh, cmd, true, true);
+                return unix_agent_argv(sh, cmd, true);
             }
             let sh = shell();
             if cfg!(windows) {
