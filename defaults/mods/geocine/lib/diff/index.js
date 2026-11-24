@@ -579,10 +579,14 @@ export default class Diff extends View {
     if (this.sizesFor !== this.sizes || this.sizesTrailing !== trailing) { this.sizesFor = this.sizes; this.sizesTrailing = trailing; this.sizesAll = [...this.sizes, trailing]; }
     const sizes = this.sizesAll;
     const listId = `${this.uid}-list`;
-    const showBar = this.files.length > 1 || this.width >= SPLIT_MIN;
+    const showBar = this.files.length > 1 || this.width >= SPLIT_MIN, max = this.maxShift();
     return v_flex().id(this.uid).size_full().min_h(0).min_w(0).relative().bg(t.background).text_color(t.foreground)
       .track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
       .on_mouse_down("left", () => this.handle.focus())
+      // While the bar's thumb is dragged (only then: no work per pointer move otherwise), the
+      // window's moves, so the drag keeps following the pointer past the view.
+      .when(Boolean(this.hdrag), el => el.on_window_mouse_move((e, cx) => this.moveHbar(e, cx))
+        .on_window_mouse_up("left", (_e, cx) => { if (this.hdrag) { this.hdrag = null; cx.notify(); } }))
       .when(showBar, el => el.child(this.toolbar(t)))
       .when(Boolean(this.error), el => el.child(h_flex().flex_none().px(SIZE.pad).py(4).gap(8).bg(alpha(t.ansi1, "18")).text_color(t.ansi1).text_size(SIZE.small)
         .child(div().flex_1().min_w(0).truncate().child(this.error))))
@@ -624,7 +628,44 @@ export default class Diff extends View {
         .child(Scrollbar.vertical(listId).absolute().inset_0())
         .when(this.more > 0, el => el.child(div().absolute().bottom(6).left(SIZE.pad).px(8).py(2).rounded(SIZE.radius).bg(t.popover).border_1().border_color(t.border)
           .text_size(SIZE.small).text_color(t.muted).child(`${this.more} more untracked files not shown`))))
+      .when(max > 0, el => el.child(this.hbar(t, shift, max)))
       .when(this.menu === "fold", el => el.child(this.foldMenu(t)));
+  }
+
+  // ---- the horizontal bar: lines wider than the view scroll by this.shift, not a scroll area,
+  // so the bar is drawn here. Its own strip under the rows, so a press on it never lands on a row.
+
+  hbarThumb(max) {
+    const track = Math.max(1, this.width - 8);
+    const w = Math.max(24, Math.min(track, track * this.width / (this.width + max)));
+    return { track, w, room: Math.max(1, track - w) };
+  }
+
+  hbar(t, shift, max) {
+    const { w, room } = this.hbarThumb(max), left = 4 + room * Math.min(1, shift / max);
+    const on = Boolean(this.hdrag);
+    return div().id(`${this.uid}-hbar`).flex_none().h(10).w_full().relative().border_t(1).border_color(t.border)
+      // A press on the track: the thumb's middle jumps there, and drags from there.
+      .on_mouse_down("left", (e, cx) => {
+        cx.stop_propagation();
+        const x = (e.local_position?.x ?? 0) / zoom();
+        this.shift = Math.round(Math.min(max, Math.max(0, (x - 4 - w / 2) / room * max)));
+        this.hdrag = { x: e.position.x, from: this.shift };
+        cx.notify();
+      })
+      .child(div().id(`${this.uid}-hthumb`).absolute().top(2).left(left).w(w).h(5).rounded(3)
+        .bg(alpha(t.foreground, on ? "60" : "30")).hover((s) => s.bg(alpha(t.foreground, "50")))
+        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.hdrag = { x: e.position.x, from: this.shift }; cx.notify(); }));
+  }
+
+  moveHbar(e, cx) {
+    const d = this.hdrag;
+    if (!d) return;
+    // Let go outside the view: the drag ends on the next move here.
+    if (e.pressed_button !== "left") { this.hdrag = null; cx.notify(); return; }
+    const max = this.maxShift(), { room } = this.hbarThumb(max);
+    const x = Math.round(Math.min(max, Math.max(0, d.from + (e.position.x - d.x) / zoom() * max / room)));
+    if (x !== this.shift) { this.shift = x; cx.notify(); }
   }
 }
 

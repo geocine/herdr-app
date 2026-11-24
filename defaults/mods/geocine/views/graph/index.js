@@ -28,7 +28,8 @@ const SEEN = 24, SPLIT = { min: 240, max: 0.7, default: 320 }, OVERVIEW_W = 340,
 const COLS = { date: 44, author: 110, hash: 64 };
 const isRefChange = (p) => /\/(HEAD|packed-refs|FETCH_HEAD|ORIG_HEAD)$|\/refs\//.test(p);
 const inGitDir = (p) => p.includes("/.git/") || p.endsWith("/.git");
-const sameFiles = (a, b) => a.length === b.length && a.every((f, i) => f.path === b[i].path && f.status === b[i].status);
+// Staging a file (same path and letter) counts as a change too.
+const sameFiles = (a, b) => a.length === b.length && a.every((f, i) => f.path === b[i].path && f.status === b[i].status && f.staged === b[i].staged);
 const keep = (map, key, value, max) => { map.delete(key); map.set(key, value); if (map.size > max) map.delete(map.keys().next().value); };
 const count = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const load = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -104,6 +105,7 @@ export default class GraphView extends View {
     this.all = load("graph.scope") !== "head";
     this.remotes = load("graph.remotes") !== "off";
     this.split = Number(load("graph.split")) || SPLIT.default;
+    this.overviewHidden = load("graph.overview") === "hidden";   // full mode: the diff without the overview column beside it
     this.seen = new Map(); this.watchToken = 0; this.seenChange = shared(CHANGED);
     this.find = null; this.ticks = 0;
     this.findState = InputState.new({ placeholder: "Find a commit, author, hash or ref" });
@@ -150,6 +152,8 @@ export default class GraphView extends View {
   miss(what) {
     const rank = { poll: 1, status: 2, full: 3 };
     if ((rank[what] ?? 0) > (rank[this.missed] ?? 0)) this.missed = what;
+    // A file saved while hidden: the catch-up read looks at the uncommitted row again.
+    if (what === "status") this.edited = true;
   }
   catchUp(cx) {
     const missed = this.missed;
@@ -222,6 +226,16 @@ export default class GraphView extends View {
     // Another copy (the panel, for full mode) read this folder already: show that at once, then read again.
     const known = this.state === "loading" && !this.root ? lastRead(opened ?? cwd, on, { all, remotes }) : null;
     let changed = false;
+    // A file saved since the last read (the watch, or missed while hidden), whichever read this is.
+    const edited = this.edited; this.edited = false;
+    // Same status, but a file saved again: the uncommitted row's counts read again when next shown,
+    // and now (with its diff) if it's the one shown.
+    const resaved = (cx) => {
+      if (!edited) return false;
+      forgetDetails(this.uncommittedKey());
+      if (!this.shown?.uncommitted) return false;
+      this.touchUncommitted(cx); return true;
+    };
     cx.spawn(async (cx) => {
       try {
         // (A task starts inside the call that spawned it, maybe a render, where the Diff can't be made.)
@@ -244,11 +258,12 @@ export default class GraphView extends View {
           if (!on) this.watch(read.root, context, cx);
           // A second look that finds nothing new leaves the table as it is.
           const shown = this.state === "ready" || this.state === "empty";
-          if (shown && read.signature === this.signature && read.scope === this.scope && sameFiles(read.files, this.files)) { this.sig = read.sig; return; }
+          if (shown && read.signature === this.signature && read.scope === this.scope && sameFiles(read.files, this.files)) { this.sig = read.sig; if (resaved(cx)) changed = true; return; }
           Object.assign(this, read);
         } else {
           const files = await readStatus(this.root, this.on);
-          if (stale() || sameFiles(files, this.files)) return;
+          if (stale()) return;
+          if (sameFiles(files, this.files)) { if (resaved(cx)) changed = true; return; }
           this.files = files;
         }
         this.build(cx); changed = true;
@@ -375,8 +390,9 @@ export default class GraphView extends View {
     if (this.selected && !this.index.has(this.selected)) this.selected = null;
     if (this.shown) {
       const now = this.commits[this.index.get(this.shown.hash)];
-      if (now) { this.shown = now; if (now.uncommitted) { forgetDetails(this.uncommittedKey()); this.loadDetails(now, cx); this.syncDiff(cx, true); } }
-      else if (this.shown.uncommitted) this.closeDetails();
+      if (now) { this.shown = now; if (now.uncommitted) this.touchUncommitted(cx); }
+      // Everything committed: full mode shows HEAD next (below), on the tab that was open.
+      else if (this.shown.uncommitted) { const tab = this.tab; this.closeDetails(); if (this.p.wide && tab === "diff") this.tab = "diff"; }
     }
     if (this.startRev) {
       const want = this.startRev; this.startRev = null;
@@ -435,7 +451,7 @@ export default class GraphView extends View {
     if (this.statusTimer) return;
     this.statusTimer = true;
     cx.timer.after(Math.max(0, 1500 - (Date.now() - (this.lastStatus ?? 0))), (cx) => {
-      this.statusTimer = false; this.lastStatus = Date.now(); this.refresh(cx, false);
+      this.statusTimer = false; this.lastStatus = Date.now(); this.edited = true; this.refresh(cx, false);
     });
   }
 
@@ -475,17 +491,25 @@ export default class GraphView extends View {
   // and the diff once the selection rests a moment, so holding an arrow doesn't start git per row.
   show(commit, cx, settle = false) {
     const changed = this.shown?.hash !== commit.hash;
+    // Full mode with the overview hidden opens on the diff (a pick of Overview stays while it's open).
+    if (!this.shown && this.tab === "overview" && this.overviewHidden && this.p.wide) this.tab = "diff";
     this.shown = commit;
     if (changed) { this.file = null; if (this.tab === "file") this.tab = this.p.wide ? "diff" : "overview"; }
     if (settle && changed) {
       const seq = this.settling = this.settleSeq = (this.settleSeq ?? 0) + 1;
       // By hash: a status read meanwhile rebuilds the table and replaces the commit object.
-      cx.timer.after(140, (cx) => { if (this.settling === seq && this.shown?.hash === commit.hash) { this.loadDetails(this.shown, cx); this.syncDiff(cx); cx.notify(); } });
+      cx.timer.after(140, (cx) => { if (this.settling === seq && this.shown?.hash === commit.hash) { this.settling = null; this.loadDetails(this.shown, cx); this.syncDiff(cx); cx.notify(); } });
       return;
     }
     this.settling = null;
     this.loadDetails(commit, cx);
     this.syncDiff(cx);
+  }
+
+  // The uncommitted row changed (its files, or a file saved again): its counts and diff read again.
+  touchUncommitted(cx) {
+    forgetDetails(this.uncommittedKey()); this.loadDetails(this.shown, cx);
+    this.diffStamp = (this.diffStamp ?? 0) + 1; this.syncDiff(cx, true);
   }
 
   closeDetails() { this.shown = null; this.page = "graph"; this.file = null; this.tab = "overview"; }
@@ -523,20 +547,32 @@ export default class GraphView extends View {
     });
   }
 
+  // The overview beside the diff: full mode, room for both, and not hidden.
+  splitDetails(width = this.detailWidth()) { return Boolean(this.p.wide) && !this.overviewHidden && width >= SPLIT_LAYOUT; }
+
+  toggleOverview(cx) {
+    this.overviewHidden = !this.overviewHidden;
+    save("graph.overview", this.overviewHidden ? "hidden" : "shown");
+    // The diff was beside the overview: it stays what's shown.
+    if (this.overviewHidden && this.tab === "overview") this.tab = "diff";
+    this.syncDiff(cx); cx.notify();
+  }
+
   diffVisible() {
     if (!this.shown) return false;
     if (this.tab === "diff") return true;
-    return Boolean(this.p.wide) && this.detailWidth() >= SPLIT_LAYOUT && this.tab !== "file";
+    return this.splitDetails() && this.tab !== "file";
   }
 
   // The shared Diff, made the first time it shows and given the shown commit when it's visible.
   syncDiff(cx, force = false) {
     if (!this.shown || !this.diffVisible()) return;
     const c = this.shown, source = c.uncommitted ? { kind: "head" } : { kind: "commit", rev: c.hash };
-    const key = JSON.stringify([this.on, this.root, source, c.uncommitted ? this.files.length : 0]);
+    // stamp: the Diff reads again for the same source (a refresh, an uncommitted file saved again).
+    const stamp = this.diffStamp ?? 0, key = JSON.stringify([this.on, this.root, source, stamp]);
     if (!force && key === this.diffKey && this.diffView) return;
     this.diffKey = key;
-    const p = { on: this.on, top: this.root, source, onOpenFile: (path, rev) => this.post((cx) => this.openPath(path, rev ?? null, cx)) };
+    const p = { on: this.on, top: this.root, source, stamp, onOpenFile: (path, rev) => this.post((cx) => this.openPath(path, rev ?? null, cx)) };
     if (this.diffView) this.diffView.set_props(p); else this.diffView = cx.new(Diff, p);
   }
 
@@ -568,7 +604,7 @@ export default class GraphView extends View {
 
   back(cx) {
     if (this.find) { this.closeFind(cx); return true; }
-    if (this.tab === "file") { this.setTab(this.p.wide && this.detailWidth() >= SPLIT_LAYOUT ? "diff" : "overview", cx); return true; }
+    if (this.tab === "file") { this.setTab(this.splitDetails() ? "diff" : "overview", cx); return true; }
     if (!this.p.wide && this.page === "commit") { this.page = "graph"; this.tab = "overview"; cx.notify(); return true; }
     if (this.opened) { this.backToRepos(cx); return true; }
     return false;
@@ -697,7 +733,7 @@ export default class GraphView extends View {
     if (this.state === "ready") actions.push(iconButton(t, "graph-find", "search", (_e, cx) => (this.find ? this.closeFind(cx) : this.openFind(cx)), { on: Boolean(this.find) }));
     if (ready && this.remoteNames?.length > 0) actions.push(iconButton(t, "graph-fetch", "fetch", (_e, cx) => this.fetch(cx), { on: Boolean(this.fetching), disabled: Boolean(this.fetching) }));
     if (this.state === "workspace") actions.push(iconButton(t, "graph-fetch-all", "fetch", (_e, cx) => this.fetchEvery(cx), { on: Boolean(this.fetchAll), disabled: Boolean(this.fetchAll) }));
-    if (this.state !== "nofolder") actions.push(iconButton(t, "graph-refresh", "rotate-cw", (_e, cx) => { forgetDetails(); this.refresh(cx); if (this.state === "workspace") this.rescan(cx); cx.notify(); }));
+    if (this.state !== "nofolder") actions.push(iconButton(t, "graph-refresh", "rotate-cw", (_e, cx) => { forgetDetails(); this.loadingDetails = null; this.diffStamp = (this.diffStamp ?? 0) + 1; this.syncDiff(cx, true); this.refresh(cx); if (this.state === "workspace") this.rescan(cx); cx.notify(); }));
     if (this.state === "workspace" || (this.state === "norepo" && !this.skipped)) actions.push(iconButton(t, "graph-settings", "settings", () => openSettings()));
     actions.push(this.expandButton(t));
     const subtitle = this.state === "workspace" ? `${count(ws.repos.length, "repo")}${this.fetchAll ? ` · fetching ${this.fetchAll.done}/${this.fetchAll.total}` : ""}`
@@ -810,14 +846,16 @@ export default class GraphView extends View {
   // The details of the shown commit: an overview column and the diff side by side when there's
   // room, else one tab at a time (Overview, Diff, the opened file).
   detailPane(t, mono, width) {
-    const c = this.shown, split = Boolean(this.p.wide) && width >= SPLIT_LAYOUT;
+    const c = this.shown, split = this.splitDetails(width), roomy = Boolean(this.p.wide) && width >= SPLIT_LAYOUT;
     const fileTab = this.file ? [{ id: "file", label: baseName(this.file.path) }] : [];
     const tabs = split ? [{ id: "diff", label: "Diff" }, ...fileTab] : [{ id: "overview", label: "Overview" }, { id: "diff", label: "Diff" }, ...fileTab];
     const tab = split && this.tab === "overview" ? "diff" : this.tab;
     const bar = subbar(t, "graph-detail-tabs").child(segmented(t, "graph-tab", tabs, tab, (id, cx) => this.setTab(id, cx)))
       .child(div().flex_1())
       .when(tab === "file" && Boolean(this.file?.rev), (e) => e.child(div().flex_none().font_family(mono).text_size(11).text_color(t.dim).child(`at ${String(this.file.rev).slice(0, 8)}`)))
-      .when(tab === "file", (e) => e.child(iconButton(t, "graph-file-close", "close", (_e, cx) => { this.file = null; this.setTab(split ? "diff" : "overview", cx); }, { size: SIZE.button - 4 })));
+      .when(tab === "file", (e) => e.child(iconButton(t, "graph-file-close", "close", (_e, cx) => { this.file = null; this.setTab(split ? "diff" : "overview", cx); }, { size: SIZE.button - 4 })))
+      // Room for the overview column: it can be hidden, giving the diff the whole width (Overview becomes a tab).
+      .when(roomy, (e) => e.child(iconButton(t, "graph-overview-toggle", "sidebar", (_e, cx) => this.toggleOverview(cx), { on: !this.overviewHidden, size: SIZE.button - 4 })));
     const content = tab === "file" ? (this.previewView ?? empty(t, "No file"))
       : tab === "diff" ? (this.diffView ?? empty(t, "Loading diff…"))
       : overview(this, t, c, mono);
@@ -845,6 +883,9 @@ export default class GraphView extends View {
     if (changed !== this.seenChange) { this.seenChange = changed; if (this.root || this.state === "workspace") this.refresh(cx); }
     const depth = depthOf(shared(DEPTH_KEY));
     if (depth !== this.seenDepth) { const first = this.seenDepth === undefined; this.seenDepth = depth; if (!first && !this.opened && !this.root) this.refresh(cx); }
+    // The shown commit's files, read again when the shared cache lost them (a refresh in another
+    // copy, or the oldest dropped). Not while the arrows pass over commits.
+    if (this.shown && this.settling == null && !this.detailsFor(this.shown)) this.loadDetails(this.shown, cx);
     const t = theme(), mono = monoFont(settings()), wide = Boolean(this.p.wide), ready = this.state === "ready";
     let view;
     if (!wide && this.page === "commit" && this.shown) {
